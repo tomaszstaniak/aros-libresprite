@@ -1,0 +1,731 @@
+Title: AROS: main menu in the window's Intuition menu
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series; aros-sdl SDL3 patch 0005-program-menu-strip
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: On AROS the commands sat in a menu bar drawn inside the window; the system menu (right mouse button on the title bar) only had SDL's own Project/Options menu.
+Change: she gets a small AROS interface (she/aros_menu.h) over the aros-sdl window properties. app/ui/aros_menu_strip.cpp builds a GadTools menu from gui.xml main_menu (titles, items, one submenu level; Ctrl+letter shortcuts also as Amiga+letter), reserves the check mark column on every item and updates enabled and checked flags on IDCMP_MENUVERIFY. Structure changes (recent files, scripts list, shortcut reload) rebuild the strip at once when the menu is not in use, otherwise after it closes; a signature check in MENUVERIFY catches unreported changes. A pick from a menu shown before a rebuild is ignored. Commands are enabled and run only while the main window is in the foreground (same rule as keyboard shortcuts in app/modules/gui.cpp), checked again when the pick runs from the UI loop. The in-window menu bar is hidden once the strip is installed. SDL3Display::nativeHandle returns the Intuition window.
+Scope: AROS
+Upstream: local-only
+Verification: mainline x86_64, pool v1-1, 2026-11-16: menu from the title bar, repeated opens, File > New, Amiga+N, View check marks, menu bar stays hidden; after review fixes: with the Open or Save dialog open all commands are disabled and Amiga+N does nothing; F3 (onion skin) shows its check mark on the first opening; Open Recent lists files saved with Ctrl+S without a menu pick in between
+Removal: AROS-specific; upstream only together with an SDL interface for native menus.
+---
+diff --git a/src/app/CMakeLists.txt b/src/app/CMakeLists.txt
+index 14e23c6b954ccefd7364025460ed5dfbcfc17670..f1d9174eb1d05bbd44a8480fd368d10d7e4ae68d 100644
+--- a/src/app/CMakeLists.txt
++++ b/src/app/CMakeLists.txt
+@@ -460,6 +460,7 @@ add_library(app-lib
+   ui/icon_button.cpp
+   ui/input_chain.cpp
+   ui/keyboard_shortcuts.cpp
++  ui/aros_menu_strip.cpp
+   ui/main_menu_bar.cpp
+   ui/main_window.cpp
+   ui/notifications.cpp
+diff --git a/src/app/app_menus.cpp b/src/app/app_menus.cpp
+index 9f2a41c31ecc6c582d8d1d686cb634893d0e10a5..2b4cd690dfe350a70c8197afa23d4d2ca14e1d6d 100644
+--- a/src/app/app_menus.cpp
++++ b/src/app/app_menus.cpp
+@@ -11,6 +11,9 @@
+ #endif
+ 
+ #include "app/app_menus.h"
++#ifdef __AROS__
++#include "app/ui/aros_menu_strip.h"
++#endif
+ #include "app/file_system.h"
+ 
+ #include "base/string.h"
+@@ -95,6 +98,9 @@ void AppMenus::reload()
+     if (base::is_file(fn))
+       KeyboardShortcuts::instance()->importFile(fn, KeySource::UserDefined);
+   }
++#ifdef __AROS__
++  aros_menu_strip_changed();
++#endif
+ }
+ 
+ void AppMenus::rebuildRecentList() {
+@@ -115,6 +121,9 @@ void AppMenus::clearIdentifiedWidgets() {
+ 
+ void AppMenus::rebuildScriptsList() {
+   m_scriptMenu.rebuildScriptsList(getById("script_list"));
++#ifdef __AROS__
++  aros_menu_strip_changed();
++#endif
+ }
+ 
+ void AppMenus::loadMenus(tinyxml2::XMLHandle& handle)
+diff --git a/src/app/recent_files_menu.cpp b/src/app/recent_files_menu.cpp
+index d31b45e501f2e8f6ebbc164d836734f871b4886f..7c61362782ca2346d8970af4344ae4626cf56a6b 100644
+--- a/src/app/recent_files_menu.cpp
++++ b/src/app/recent_files_menu.cpp
+@@ -15,6 +15,9 @@
+ #include "base/bind.h"
+ #include "base/path.h"
+ #include "recent_files.h"
++#ifdef __AROS__
++#include "app/ui/aros_menu_strip.h"
++#endif
+ 
+ namespace app {
+ 
+@@ -63,6 +66,9 @@ void RecentFilesMenu::rebuildRecentList()
+         menuitem->setEnabled(false);
+         submenu->addChild(menuitem);
+     }
++#ifdef __AROS__
++    aros_menu_strip_changed();
++#endif
+ }
+ 
+ }
+diff --git a/src/app/ui/aros_menu_strip.cpp b/src/app/ui/aros_menu_strip.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..8d77ff2e7643c5fdbc4744941cdc9df748bde640
+--- /dev/null
++++ b/src/app/ui/aros_menu_strip.cpp
+@@ -0,0 +1,418 @@
++// LibreSprite | Copyright (C) 2026  LibreSprite contributors
++//
++// This program is free software; you can redistribute it and/or modify
++// it under the terms of the GNU General Public License version 2 as
++// published by the Free Software Foundation.
++
++// AROS: the main menu as the window's Intuition menu (GadTools), built from
++// the same menus as the in-window menu bar (gui.xml "main_menu").
++//
++// - Just before Intuition shows the menu (IDCMP_MENUVERIFY) the enabled and
++//   checked flags of the items are updated in place. Every item reserves the
++//   check mark column, so a check mark can appear on any opening.
++// - The strip is rebuilt when the menu structure changes (recent files,
++//   scripts, shortcuts): at once when the menu is not in use, otherwise after
++//   it closes. A pick that belongs to a menu shown before a rebuild is ignored.
++// - Commands run only while the main window is in the foreground, as with
++//   keyboard shortcuts: a modal dialog blocks them.
++// - Commands with a Ctrl+letter shortcut also get Amiga+letter.
++
++#ifdef __AROS__
++
++#ifdef HAVE_CONFIG_H
++#include "config.h"
++#endif
++
++#include "app/ui/aros_menu_strip.h"
++
++#include "app/app.h"
++#include "app/app_menus.h"
++#include "app/commands/command.h"
++#include "app/commands/params.h"
++#include "app/task_manager.h"
++#include "app/ui/app_menuitem.h"
++#include "app/ui/keyboard_shortcuts.h"
++#include "app/ui/main_window.h"
++#include "app/ui_context.h"
++#include "she/aros_menu.h"
++#include "ui/manager.h"
++#include "ui/menu.h"
++#include "ui/window.h"
++
++#include <intuition/intuition.h>
++#include <libraries/gadtools.h>
++#include <proto/exec.h>
++#include <proto/gadtools.h>
++#include <proto/intuition.h>
++
++#include <deque>
++#include <string>
++#include <vector>
++
++namespace app {
++
++namespace {
++
++  // One built strip and everything its NewMenu entries point to.
++  struct Strip {
++    ::Menu* menu = nullptr;
++    APTR visualInfo = nullptr;
++    std::deque<std::string> texts;    // labels and command keys (stable addresses)
++    struct Picked {
++      Command* command;
++      Params params;
++      ::MenuItem* item;               // filled in after CreateMenus
++    };
++    std::vector<Picked> items;        // NewMenu user data: index + 1
++    std::string signature;            // structure, see structure()
++    unsigned generation = 0;
++  };
++
++  Strip* current = nullptr;
++  unsigned generation = 0;      // of the last built strip
++  unsigned sessionStrip = 0;    // strip generation shown by the open menu, 0: none
++  bool menuOpen = false;        // between IDCMP_MENUVERIFY and the closing pick
++  bool rebuildPending = false;  // structure changed while the menu was in use
++  bool rebuildQueued = false;
++
++  // Same rule as keyboard shortcuts (app/modules/gui.cpp): commands run only
++  // when the main window is the window in the foreground.
++  bool mainWindowInForeground()
++  {
++    ui::Manager* manager = ui::Manager::getDefault();
++    if (!manager || !App::instance())
++      return false;
++    for (ui::Widget* widget : manager->children()) {
++      auto* window = static_cast<ui::Window*>(widget);
++      if (window->isForeground())
++        return false;
++      if (window->isDesktop() && window == App::instance()->mainWindow())
++        return true;
++    }
++    return false;
++  }
++
++  // GTMENUITEM_USERDATA(item), spelled out: the macro names "struct MenuItem",
++  // which is ambiguous inside namespace app.
++  IPTR userData(::MenuItem* item)
++  {
++    return (IPTR)*reinterpret_cast<APTR*>(item + 1);
++  }
++
++  // Menu text: drop the '&' mnemonic markers; GadTools draws bytes of the
++  // system character set, so keep plain ASCII.
++  std::string label(const std::string& text)
++  {
++    std::string out;
++    for (size_t i = 0; i < text.size(); ++i) {
++      unsigned char c = text[i];
++      if (c == '&') {
++        if (i + 1 < text.size() && text[i + 1] == '&')
++          out += '&', ++i;
++        continue;
++      }
++      if (c >= 0x80) {
++        // skip the rest of a UTF-8 sequence
++        while (i + 1 < text.size() && (static_cast<unsigned char>(text[i + 1]) & 0xC0) == 0x80)
++          ++i;
++        out += '?';
++        continue;
++      }
++      out += static_cast<char>(c);
++    }
++    return out;
++  }
++
++  // Amiga+letter for a command whose shortcut is Ctrl+letter.
++  char amigaKey(AppMenuItem* item)
++  {
++    Key* key = item->key();
++    if (!key)
++      return 0;
++    for (const ui::Accelerator& accel : key->accels()) {
++      if (accel.modifiers() == she::kKeyCtrlModifier &&
++          accel.scancode() >= she::kKeyA && accel.scancode() <= she::kKeyZ)
++        return 'A' + (accel.scancode() - she::kKeyA);
++    }
++    return 0;
++  }
++
++  // Menu structure only (labels, commands, Amiga keys); states are applied
++  // by applyState().
++  void addEntries(Strip& strip, std::vector<struct NewMenu>& out, ui::Menu* menu,
++                  UBYTE type)
++  {
++    for (ui::Widget* child : menu->children()) {
++      if (dynamic_cast<ui::MenuSeparator*>(child)) {
++        if (!out.empty() && out.back().nm_Label != NM_BARLABEL && out.back().nm_Type != NM_TITLE)
++          out.push_back({ type, NM_BARLABEL, nullptr, 0, 0, nullptr });
++        continue;
++      }
++      auto* menuItem = dynamic_cast<ui::MenuItem*>(child);
++      if (!menuItem)
++        continue;
++
++      strip.texts.push_back(label(menuItem->text()));
++      // CHECKIT on every item: the check mark column is always there, so any
++      // command can show its state without a new strip.
++      struct NewMenu nm = { type, (STRPTR)strip.texts.back().c_str(), nullptr, CHECKIT, 0, nullptr };
++
++      if (auto* appItem = dynamic_cast<AppMenuItem*>(menuItem)) {
++        if (Command* command = appItem->getCommand()) {
++          Params params = appItem->getParams();
++          if (char k = amigaKey(appItem)) {
++            strip.texts.push_back(std::string(1, k));
++            nm.nm_CommKey = (STRPTR)strip.texts.back().c_str();
++          }
++          strip.items.push_back({ command, params, nullptr });
++          nm.nm_UserData = (APTR)(IPTR)strip.items.size();
++        }
++      }
++
++      ui::Menu* submenu = menuItem->getSubmenu();
++      if (submenu && type == NM_ITEM) {
++        nm.nm_Flags &= ~CHECKIT;   // the submenu arrow takes that place
++        out.push_back(nm);
++        addEntries(strip, out, submenu, NM_SUB);
++      }
++      else if (submenu) {
++        // Intuition has two levels below the title: deeper menus are left out.
++        continue;
++      }
++      else {
++        out.push_back(nm);
++      }
++    }
++    if (!out.empty() && out.back().nm_Label == NM_BARLABEL)
++      out.pop_back();
++  }
++
++  // The NewMenu entries of the current app menus; returns false without menus.
++  bool structure(Strip& strip, std::vector<struct NewMenu>& entries)
++  {
++    ui::Menu* root = AppMenus::instance()->getRootMenu();
++    if (!root)
++      return false;
++    for (ui::Widget* child : root->children()) {
++      auto* title = dynamic_cast<ui::MenuItem*>(child);
++      if (!title || !title->getSubmenu())
++        continue;
++      strip.texts.push_back(label(title->text()));
++      entries.push_back({ NM_TITLE, (STRPTR)strip.texts.back().c_str(), nullptr, 0, 0, nullptr });
++      addEntries(strip, entries, title->getSubmenu(), NM_ITEM);
++    }
++    entries.push_back({ NM_END, nullptr, nullptr, 0, 0, nullptr });
++
++    std::string& sig = strip.signature;
++    for (const struct NewMenu& nm : entries) {
++      sig += char('0' + nm.nm_Type);
++      if (nm.nm_Label == NM_BARLABEL)
++        sig += '-';
++      else if (nm.nm_Label)
++        sig += (const char*)nm.nm_Label;
++      sig += '\1';
++      if (nm.nm_CommKey)
++        sig += (const char*)nm.nm_CommKey;
++      sig += '\2';
++    }
++    return true;
++  }
++
++  // Enabled and checked flags from the commands; with the main window not
++  // in the foreground every command item is disabled.
++  void applyState(Strip& strip)
++  {
++    Context* context = UIContext::instance();
++    context->updateFlags();
++    bool foreground = mainWindowInForeground();
++    for (Strip::Picked& entry : strip.items) {
++      if (!entry.item)
++        continue;
++      Params params = entry.params;
++      entry.command->loadParams(params);
++      if (foreground && entry.command->isEnabled(context))
++        entry.item->Flags |= ITEMENABLED;
++      else
++        entry.item->Flags &= ~ITEMENABLED;
++      if (entry.command->isChecked(context))
++        entry.item->Flags |= CHECKED;
++      else
++        entry.item->Flags &= ~CHECKED;
++    }
++  }
++
++  Strip* build(::Window* window)
++  {
++    if (!window)
++      return nullptr;
++    auto* strip = new Strip;
++    std::vector<struct NewMenu> entries;
++    if (!structure(*strip, entries)) {
++      delete strip;
++      return nullptr;
++    }
++
++    strip->visualInfo = GetVisualInfoA(window->WScreen, nullptr);
++    strip->menu = strip->visualInfo ? CreateMenusA(entries.data(), nullptr) : nullptr;
++    struct TagItem layoutTags[] = { { GTMN_NewLookMenus, TRUE }, { TAG_DONE, 0 } };
++    if (!strip->menu || !LayoutMenusA(strip->menu, strip->visualInfo, layoutTags)) {
++      if (strip->menu)
++        FreeMenus(strip->menu);
++      if (strip->visualInfo)
++        FreeVisualInfo(strip->visualInfo);
++      delete strip;
++      return nullptr;
++    }
++    // Remember each command item, for the flag updates.
++    for (::Menu* m = strip->menu; m; m = m->NextMenu)
++      for (::MenuItem* i = m->FirstItem; i; i = i->NextItem) {
++        for (::MenuItem* s = i; s; s = (s == i ? i->SubItem : s->NextItem)) {
++          IPTR index = userData(s);
++          if (index > 0 && index <= strip->items.size())
++            strip->items[index - 1].item = s;
++        }
++      }
++    strip->generation = ++generation;
++    applyState(*strip);
++    return strip;
++  }
++
++  void dispose(Strip* strip)
++  {
++    if (!strip)
++      return;
++    FreeMenus(strip->menu);
++    FreeVisualInfo(strip->visualInfo);
++    delete strip;
++  }
++
++  // Replaces the window's strip with a freshly built one. Not while the
++  // menu is in use.
++  void rebuild(void* intuitionWindow)
++  {
++    auto* window = static_cast<::Window*>(intuitionWindow);
++    if (!window)
++      return;
++    Strip* fresh = build(window);
++    if (!fresh)
++      return;
++    if (current)
++      ClearMenuStrip(window);
++    if (!SetMenuStrip(window, fresh->menu)) {
++      if (current)
++        ResetMenuStrip(window, current->menu);
++      dispose(fresh);
++      return;
++    }
++    dispose(current);
++    current = fresh;
++  }
++
++  // IDCMP_MENUVERIFY: Intuition waits for this; only item flags change here.
++  void verify(void*)
++  {
++    if (!current)
++      return;
++    menuOpen = true;
++    sessionStrip = current->generation;
++    applyState(*current);
++    if (!rebuildPending) {
++      // A structure change that did not report itself: the next strip.
++      Strip probe;
++      std::vector<struct NewMenu> entries;
++      if (structure(probe, entries) && probe.signature != current->signature)
++        rebuildPending = true;
++    }
++  }
++
++  // Rebuilds the strip from the UI loop, unless a menu is in use then (the
++  // pick that closes it calls this again).
++  void scheduleRebuild()
++  {
++    if (menuOpen) {
++      rebuildPending = true;
++      return;
++    }
++    rebuildPending = false;
++    if (rebuildQueued)
++      return;
++    rebuildQueued = true;
++    TaskManager::instance().delayed([]{
++      rebuildQueued = false;
++      if (menuOpen) {
++        rebuildPending = true;
++        return;
++      }
++      if (void* window = she::aros::mainWindow())
++        rebuild(window);
++    });
++  }
++
++  void pick(int menuNumber)
++  {
++    if (!current)
++      return;
++    // A menu shown before a rebuild has other item numbers.
++    bool stale = (sessionStrip != 0 && sessionStrip != current->generation);
++    bool fromMenu = menuOpen;
++    menuOpen = false;
++    sessionStrip = 0;
++    if (fromMenu && rebuildPending)
++      scheduleRebuild();
++    if ((UWORD)menuNumber == MENUNULL || stale)
++      return;
++
++    ::MenuItem* item = ItemAddress(current->menu, (UWORD)menuNumber);
++    if (!item)
++      return;
++    IPTR index = userData(item);
++    if (index == 0 || index > current->items.size())
++      return;
++    // Copy: the strip may be rebuilt before this runs.
++    Strip::Picked picked = current->items[index - 1];
++    // Run it from the UI loop, not from inside SDL's event pump. Amiga+key
++    // picks arrive without IDCMP_MENUVERIFY, so everything is checked here.
++    TaskManager::instance().delayed([picked]{
++      if (!mainWindowInForeground())
++        return;
++      Params params = picked.params;
++      picked.command->loadParams(params);
++      UIContext* context = UIContext::instance();
++      context->updateFlags();
++      if (picked.command->isEnabled(context))
++        context->executeCommand(picked.command, params);
++    });
++  }
++
++} // anonymous namespace
++
++bool install_aros_menu_strip()
++{
++  void* window = she::aros::mainWindow();
++  if (!window)
++    return false;
++  she::aros::setMenuHandlers(verify, pick);
++  rebuild(window);
++  return current != nullptr;
++}
++
++void aros_menu_strip_changed()
++{
++  if (current)
++    scheduleRebuild();
++}
++
++void uninstall_aros_menu_strip()
++{
++  she::aros::setMenuHandlers(nullptr, nullptr);
++  if (current) {
++    if (auto* window = static_cast<::Window*>(she::aros::mainWindow()))
++      ClearMenuStrip(window);
++    dispose(current);
++    current = nullptr;
++  }
++}
++
++} // namespace app
++
++#endif // __AROS__
+diff --git a/src/app/ui/aros_menu_strip.h b/src/app/ui/aros_menu_strip.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..82af18bea041e05281fdee288f90d0abdf181b11
+--- /dev/null
++++ b/src/app/ui/aros_menu_strip.h
+@@ -0,0 +1,20 @@
++// LibreSprite | Copyright (C) 2026  LibreSprite contributors
++//
++// This program is free software; you can redistribute it and/or modify
++// it under the terms of the GNU General Public License version 2 as
++// published by the Free Software Foundation.
++
++#pragma once
++
++namespace app {
++
++  // AROS: put the main menu into the window's Intuition menu. Returns false
++  // when there is no Intuition window (the in-window menu bar stays then).
++  bool install_aros_menu_strip();
++  void uninstall_aros_menu_strip();
++
++  // The app menus changed (recent files, scripts, shortcuts): the system menu
++  // is rebuilt at the next safe moment. Does nothing when not installed.
++  void aros_menu_strip_changed();
++
++} // namespace app
+diff --git a/src/app/ui/main_window.cpp b/src/app/ui/main_window.cpp
+index 92ac7af299be6e17ed027cce99ec8809ec0d8d99..3e1630959acfa9eca4fd2eac5ff30398b1ef4d4d 100644
+--- a/src/app/ui/main_window.cpp
++++ b/src/app/ui/main_window.cpp
+@@ -25,6 +25,8 @@
+ #include "app/ui/editor/editor.h"
+ #include "app/ui/editor/editor_view.h"
+ #include "app/ui/home_view.h"
++#include "app/task_manager.h"
++#include "app/ui/aros_menu_strip.h"
+ #include "app/ui/main_menu_bar.h"
+ #include "app/ui/notifications.h"
+ #include "app/ui/preview_editor.h"
+@@ -87,6 +89,17 @@ MainWindow::MainWindow()
+ 
+   // Setup the menus
+   m_menuBar->setMenu(AppMenus::instance()->getRootMenu());
++#ifdef __AROS__
++  // The main menu lives in the window's Intuition menu. Installed once the
++  // main window is complete: building the strip asks every command for its
++  // state, which needs the workspace.
++  TaskManager::instance().delayed([this]{
++    if (install_aros_menu_strip()) {
++      m_nativeMenu = true;
++      configureWorkspaceLayout();
++    }
++  });
++#endif
+ 
+   // Add the widgets in the boxes
+   menuBarPlaceholder()->addChild(m_menuBar);
+@@ -191,6 +204,10 @@ MainWindow::~MainWindow()
+   // connections should be handle in a better/safer way.
+   delete m_workspace;
+ 
++#ifdef __AROS__
++  uninstall_aros_menu_strip();
++#endif
++
+   // Remove the root-menu from the menu-bar (because the rootmenu
+   // module should destroy it).
+   m_menuBar->setMenu(NULL);
+@@ -436,7 +453,7 @@ void MainWindow::configureWorkspaceLayout()
+   bool normal = (m_mode == NormalMode);
+   bool isDoc = (getDocView() != nullptr);
+ 
+-  m_menuBar->setVisible(normal);
++  m_menuBar->setVisible(normal && !m_nativeMenu);
+   m_tabsBar->setVisible(normal);
+   colorBarPlaceholder()->setVisible(normal && isDoc);
+   m_touchBar->setVisible(normal && isDoc && Preferences::instance().touchBar.visible());
+diff --git a/src/app/ui/main_window.h b/src/app/ui/main_window.h
+index 9914ed607c8035921a4a25fdaff48d0504f9ea78..4cdf5072b6ab06b0dd302cb0bbb4733bc38f95e7 100644
+--- a/src/app/ui/main_window.h
++++ b/src/app/ui/main_window.h
+@@ -100,6 +100,7 @@ namespace app {
+     void configureWorkspaceLayout();
+ 
+     MainMenuBar* m_menuBar;
++    bool m_nativeMenu = false;  // main menu in the system menu bar (AROS)
+     ContextBar* m_contextBar;
+     StatusBar* m_statusBar;
+     ColorBar* m_colorBar;
+diff --git a/src/she/aros_menu.h b/src/she/aros_menu.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..0ac43141b11b2e61af92524d348e04c9a250075b
+--- /dev/null
++++ b/src/she/aros_menu.h
+@@ -0,0 +1,29 @@
++// LibreSprite | Copyright (C) 2026  LibreSprite contributors
++//
++// This file is released under the terms of the MIT license.
++// Read LICENSE.txt for more information.
++
++#pragma once
++
++// AROS: the application's commands in the window's Intuition menu.
++// The SDL3 back end passes the two Intuition events the application needs;
++// building the menu strip (GadTools) is up to the application.
++
++#include <functional>
++
++namespace she {
++namespace aros {
++
++  // verify(window): just before the menu shows (IDCMP_MENUVERIFY); the
++  // application may change item flags, but must not replace the strip.
++  // pick(MENUNULL): the menu closed without a choice.
++  // pick(menuNumber): an item of the application's strip was chosen
++  // (Intuition menu number, one call per selected item).
++  void setMenuHandlers(std::function<void(void* intuitionWindow)> verify,
++                       std::function<void(int menuNumber)> pick);
++
++  // The Intuition window (struct Window *) of the main display, or nullptr.
++  void* mainWindow();
++
++} // namespace aros
++} // namespace she
+diff --git a/src/she/sdl3/sdl3_display.cpp b/src/she/sdl3/sdl3_display.cpp
+index 3fa53aa88a66db5e2d8c64a83bb65997d4eb3d40..a63b4585ccf1b1070a4283d0ca0721df2d529251 100644
+--- a/src/she/sdl3/sdl3_display.cpp
++++ b/src/she/sdl3/sdl3_display.cpp
+@@ -342,6 +342,9 @@ namespace she {
+     return SDL_GetPointerProperty(props, SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, nullptr);
+   #elif defined(ANDROID)
+     return SDL_GetPointerProperty(props, SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, nullptr);
++  #elif defined(__AROS__)
++    // struct Window * of the Intuition window (aros-sdl SDL3 property)
++    return SDL_GetPointerProperty(props, "SDL.window.aros.window", nullptr);
+   #elif defined(__linux__)
+     // Only meaningful under X11; a Wayland-native session has no numeric
+     // handle here, callers must tolerate nullptr.
+diff --git a/src/she/sdl3/she.cpp b/src/she/sdl3/she.cpp
+index fbaaaabfcd9a28ce92d11b6545eea8e4a1de7d24..cc7ca150b00866f6f2ccc04f70ef581aabea60d5 100644
+--- a/src/she/sdl3/she.cpp
++++ b/src/she/sdl3/she.cpp
+@@ -22,6 +22,70 @@
+ #include <SDL3/SDL.h>
+ #include <SDL3_image/SDL_image.h>
+ 
++#ifdef __AROS__
++#include "she/aros_menu.h"
++
++namespace she {
++namespace aros {
++
++  static std::function<void(void*)> menuVerify;
++  static std::function<void(int)> menuPick;
++
++  // Called by SDL from its event pump, before Intuition shows the menu.
++  static void menuVerifyTrampoline(void*, void* window)
++  {
++    if (menuVerify)
++      menuVerify(window);
++  }
++
++  // The application has one SDL window.
++  static SDL_Window* firstWindow()
++  {
++    int count = 0;
++    SDL_Window** windows = SDL_GetWindows(&count);
++    SDL_Window* window = (windows && count > 0) ? windows[0] : nullptr;
++    SDL_free(windows);
++    return window;
++  }
++
++  void setMenuHandlers(std::function<void(void*)> verify, std::function<void(int)> pick)
++  {
++    menuVerify = std::move(verify);
++    menuPick = std::move(pick);
++    // aros-sdl SDL3 window properties
++    if (SDL_Window* window = firstWindow()) {
++      SDL_PropertiesID props = SDL_GetWindowProperties(window);
++      SDL_SetPointerProperty(props, "SDL.window.aros.menuverify_callback",
++                             reinterpret_cast<void*>(&menuVerifyTrampoline));
++      SDL_SetPointerProperty(props, "SDL.window.aros.menuverify_userdata", nullptr);
++    }
++  }
++
++  void* mainWindow()
++  {
++    SDL_Window* window = firstWindow();
++    return window ? SDL_GetPointerProperty(SDL_GetWindowProperties(window), "SDL.window.aros.window", nullptr)
++                  : nullptr;
++  }
++
++  // An application menu pick, sent by SDL as its own event type.
++  static bool handleEvent(const SDL_Event& event)
++  {
++    SDL_Window* window = SDL_GetWindowFromID(event.user.windowID);
++    if (!window)
++      return false;
++    Uint32 type = (Uint32)SDL_GetNumberProperty(SDL_GetWindowProperties(window), "SDL.window.aros.menupick_event", 0);
++    if (type == 0 || event.type != type)
++      return false;
++    if (menuPick)
++      menuPick(event.user.code);
++    return true;
++  }
++
++} // namespace aros
++} // namespace she
++#endif
++
+ #include <atomic>
+ #include <chrono>
+ #include <cstdlib>
+@@ -625,6 +689,10 @@ namespace she {
+           continue;
+ 
+         default:
++#ifdef __AROS__
++          if (aros::handleEvent(sdlEvent))
++            continue;
++#endif
+           std::cout << "Unknown event: " << sdlEvent.type << std::endl;
+           continue;
+         }

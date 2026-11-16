@@ -1,0 +1,53 @@
+Title: AROS ABIv11 build fixes
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: On ABIv11, pthread.h (from libstdc++) includes exec/ports.h, whose global struct Message makes "Message" ambiguous in namespace app code that uses "using namespace ui"; AROS_BSTR_strlen needs <cstring>; app/file/file.cpp compared int with color_t (-Wsign-compare).
+Change: ui/message.h (AROS): namespace app { using ui::Message; }. app/file_system.cpp includes <cstring> in its AROS block. file.cpp casts the transparent colour to int for the comparison.
+Scope: AROS (message.h, file_system.cpp); the file.cpp cast is portable
+Upstream: local-only (file.cpp cast: candidate)
+Verification: ABIv11 (AROS One, pool v11-3, 2026-11-16): builds with no warnings with GCC 10.5 and SDK-202609; started from a Shell with a 262144-byte stack, new sprite, drawing, PNG save with Enter, Intuition menu, AROS Capture picture pasted, LibreSprite picture shown by MultiView CLIPBOARD, clean exit (no task or pthread left). Mainline x86_64 rebuilt with no warnings.
+Removal: when the ABIv11 pthread.h no longer pulls in exec headers.
+---
+diff --git a/src/app/file/file.cpp b/src/app/file/file.cpp
+index df5e937795068d990fd3f91c6da432842ec921bc..2c332d440d9ae6525c8b4b9cf0368ac2c0635c12 100644
+--- a/src/app/file/file.cpp
++++ b/src/app/file/file.cpp
+@@ -320,7 +320,7 @@ FileOp* FileOp::createSaveDocumentOperation(const Context* context,
+     for (auto& pal : fop->m_document->sprite()->getPalettes()) {
+       for (int c=0; c<pal->size(); ++c) {
+         int a = rgba_geta(pal->getEntry(c));
+-        if (oneAlpha && c == transparentColor) {
++        if (oneAlpha && c == int(transparentColor)) {
+           continue;
+         }
+         if (a < 255) {
+diff --git a/src/app/file_system.cpp b/src/app/file_system.cpp
+index 2c22f5411a0e29584d93cbf7a0479a06d4cb4851..c22d1459790331ee464d683ea9409de6d778d024 100644
+--- a/src/app/file_system.cpp
++++ b/src/app/file_system.cpp
+@@ -43,6 +43,7 @@
+ #endif
+ 
+ #ifdef __AROS__
++#include <cstring>  // strlen (AROS_BSTR_strlen)
+   #include <dos/dosextens.h>
+   #include <proto/dos.h>
+   #include <proto/exec.h>
+diff --git a/src/ui/message.h b/src/ui/message.h
+index f3a103c2b87f098721c7e5bbf0f1066b880924ae..8ad7db2906dab39a23c0d5f0f21b7865b5f8a0eb 100644
+--- a/src/ui/message.h
++++ b/src/ui/message.h
+@@ -186,3 +186,10 @@ namespace ui {
+   };
+ 
+ } // namespace ui
++
++#ifdef __AROS__
++// On AROS ABIv11, pthread.h (reached from libstdc++) includes exec/ports.h,
++// which declares a global struct Message. Code in namespace app that uses
++// "using namespace ui" would see both; this one is meant.
++namespace app { using ui::Message; }
++#endif

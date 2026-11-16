@@ -1,0 +1,96 @@
+Title: Treat the AmigaDOS volume colon as a path boundary
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: AmigaDOS paths start with a volume or assign name and a colon ("Work:Art/pic.png", "RAM:pic.png"). The path helpers only knew '/' and '\\', so "RAM:pic.png" had no directory and join_path("RAM:", "x") gave "RAM:/x", which means the parent of RAM:.
+Change: On AROS the colon also ends a path component; get_file_path keeps it ("RAM:"), join_path adds no '/' after it.
+Scope: AROS
+Upstream: candidate
+Verification: Built for mainline AROS x86_64 (GCC 10.5, SDK nightly 20261110); LibreSprite starts on nightly 20261113 (pool v1-1, 2026-11-16)
+Removal: None planned.
+---
+diff --git a/src/base/path.cpp b/src/base/path.cpp
+index 478434da4894b2c4feb73ef711a78605de9afacf..271a050798324e0b75b696bfcdf11c59f0c5810f 100644
+--- a/src/base/path.cpp
++++ b/src/base/path.cpp
+@@ -32,16 +32,30 @@ bool is_path_separator(std::string::value_type chr)
+   return (chr == '\\' || chr == '/');
+ }
+ 
++// Where the last path component starts. On AROS the colon after a volume or
++// assign name ("Work:", "RAM:") also ends a path component.
++static bool is_component_boundary(std::string::value_type chr)
++{
++#ifdef __AROS__
++  return is_path_separator(chr) || chr == ':';
++#else
++  return is_path_separator(chr);
++#endif
++}
++
+ std::string get_file_path(const std::string& filename)
+ {
+   std::string::const_reverse_iterator rit;
+   std::string res;
+ 
+   for (rit=filename.rbegin(); rit!=filename.rend(); ++rit)
+-    if (is_path_separator(*rit))
++    if (is_component_boundary(*rit))
+       break;
+ 
+   if (rit != filename.rend()) {
++    // "Work:file" lives in "Work:", not in "Work".
++    if (!is_path_separator(*rit))
++      --rit;
+     ++rit;
+     std::copy(filename.begin(), std::string::const_iterator(rit.base()),
+               std::back_inserter(res));
+@@ -56,7 +70,7 @@ std::string get_file_name(const std::string& filename)
+   std::string result;
+ 
+   for (rit=filename.rbegin(); rit!=filename.rend(); ++rit)
+-    if (is_path_separator(*rit))
++    if (is_component_boundary(*rit))
+       break;
+ 
+   std::copy(std::string::const_iterator(rit.base()), filename.end(),
+@@ -72,7 +86,7 @@ std::string get_file_extension(const std::string& filename)
+ 
+   // search for the first dot from the end of the string
+   for (rit=filename.rbegin(); rit!=filename.rend(); ++rit) {
+-    if (is_path_separator(*rit))
++    if (is_component_boundary(*rit))
+       return result;
+     else if (*rit == '.')
+       break;
+@@ -93,7 +107,7 @@ std::string replace_extension(const std::string& filename, const std::string& ex
+ 
+   // search for the first dot from the end of the string
+   for (rit=filename.rbegin(); rit!=filename.rend(); ++rit) {
+-    if (is_path_separator(*rit))
++    if (is_component_boundary(*rit))
+       return result;
+     else if (*rit == '.')
+       break;
+@@ -117,7 +131,7 @@ std::string get_file_title(const std::string& filename)
+   std::string result;
+ 
+   for (rit=filename.rbegin(); rit!=filename.rend(); ++rit) {
+-    if (is_path_separator(*rit))
++    if (is_component_boundary(*rit))
+       break;
+     else if (*rit == '.' && last_dot == filename.end())
+       last_dot = rit.base()-1;
+@@ -137,8 +151,8 @@ std::string join_path(const std::string& path, const std::string& file)
+ {
+   std::string result(path);
+ 
+-  // Add a separator at the end if it is necessay
+-  if (!result.empty() && !is_path_separator(*(result.end()-1)))
++  // Add a separator at the end if it is necessay ("Work:" needs none)
++  if (!result.empty() && !is_component_boundary(*(result.end()-1)))
+     result.push_back(path_separator);
+ 
+   // Add the file

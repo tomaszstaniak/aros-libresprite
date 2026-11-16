@@ -1,0 +1,109 @@
+Title: Handle the pointer position of a button event before the button
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: Mouse buttons are sent to the widget under the last handled pointer position, and Button checks hasMouseOver() against the global pointer position, which only mouse-move events update. When the move to the click position was not handled before the press (press and release queued together on a busy system, as with QEMU input), the button got press and release with mouseover=0 and did nothing: "Don't Save" in the quit alert needed several tries.
+Change: ui::Manager handles a pointer move to the event position before MouseDown, MouseUp and MouseDoubleClick when the position differs from the current one; when it is the same but a window opened or closed under the still pointer, it picks the widget under the pointer again (catchUpMousePosition).
+Scope: all platforms (ui library)
+Upstream: candidate
+Verification: ABIv11 (AROS One, pool v11-3, 2026-11-16): a temporary trace showed "DBGBTN down 'Don't Save' mouseover=0" and no click before the change; after it mouseover=1 for press and release and the fast click closed the program (quit alert, fast click on New File as well). Second case: two script permission alerts opened one after the other under a still pointer; the click on OK of the second alert did nothing before, and works with the re-pick (v11-3, 2026-11-16).
+Removal: when upstream fixes the pointer state for button events.
+---
+diff --git a/src/ui/manager.cpp b/src/ui/manager.cpp
+index e7edd33ae8d75d9aa781d137cc8c49a74f714af5..94584f0dec671e018782478edacd713185eb6e9f 100644
+--- a/src/ui/manager.cpp
++++ b/src/ui/manager.cpp
+@@ -362,6 +362,7 @@ void Manager::generateMessagesFromSheEvents()
+       }
+ 
+       case she::Event::MouseDown: {
++        catchUpMousePosition(sheEvent);
+         MouseButtons pressedButton = mouse_buttons_from_she_to_ui(sheEvent);
+         m_mouseButtons = (MouseButtons)((int)m_mouseButtons | (int)pressedButton);
+         _internal_set_mouse_buttons(m_mouseButtons);
+@@ -376,6 +377,7 @@ void Manager::generateMessagesFromSheEvents()
+       }
+ 
+       case she::Event::MouseUp: {
++        catchUpMousePosition(sheEvent);
+         MouseButtons releasedButton = mouse_buttons_from_she_to_ui(sheEvent);
+         m_mouseButtons = (MouseButtons)((int)m_mouseButtons & ~(int)releasedButton);
+         _internal_set_mouse_buttons(m_mouseButtons);
+@@ -389,6 +391,7 @@ void Manager::generateMessagesFromSheEvents()
+       }
+ 
+       case she::Event::MouseDoubleClick: {
++        catchUpMousePosition(sheEvent);
+         MouseButtons clickedButton = mouse_buttons_from_she_to_ui(sheEvent);
+         // The double click stands in for the second press (Widget converts it into a mouse down),
+         // so it must mark the button as pressed for the release that follows.
+@@ -434,6 +437,47 @@ void Manager::generateMessagesFromSheEvents()
+   }
+ }
+ 
++// A button event carries the pointer position. When no movement to that
++// position has been handled yet (the move event came late, was merged, or the
++// press and release were queued together on a busy system), handle that
++// movement first; when the pointer did not move but a window opened or
++// closed under it, find the widget under it again. The widget under the
++// pointer, its hover state and the position hasMouseOver() reads must match
++// the click, or a button that gets the press and the release does not see
++// the pointer over it and ignores the click.
++void Manager::catchUpMousePosition(const she::Event& sheEvent)
++{
++  if (sheEvent.position() != get_mouse_position()) {
++    _internal_set_mouse_position(sheEvent.position());
++    handleMouseMove(
++      sheEvent.position(),
++      m_mouseButtons,
++      sheEvent.modifiers(),
++      sheEvent.pointerType(),
++      sheEvent.pressure());
++    return;
++  }
++
++  // Same position, but the widgets may have changed under a pointer that did
++  // not move (a dialog opened or closed there): find the widget under it.
++  if (capture_widget)
++    return;
++  mouse_widgets_list.clear();
++  broadcastMouseMessage(mouse_widgets_list);
++  Widget* widget = nullptr;
++  for (auto mouseWidget : mouse_widgets_list) {
++    widget = mouseWidget->pick(sheEvent.position());
++    if (widget)
++      break;
++  }
++  if (widget != mouse_widget) {
++    if (!widget)
++      freeMouse();
++    else
++      setMouse(widget);
++  }
++}
++
+ void Manager::handleMouseMove(const gfx::Point& mousePos,
+                               MouseButtons mouseButtons,
+                               KeyModifiers modifiers,
+diff --git a/src/ui/manager.h b/src/ui/manager.h
+index ba4764162f8351aae3409c85e6cb00d2f024fb7b..ba2cf84148a9d8e130c89f3e8f5a58eb6fea2d1c 100644
+--- a/src/ui/manager.h
++++ b/src/ui/manager.h
+@@ -14,6 +14,7 @@
+ #include "ui/widget.h"
+ 
+ namespace she {
++  class Event;
+   class Display;
+   class EventQueue;
+ }
+@@ -121,6 +122,7 @@ namespace ui {
+                                   KeyModifiers modifiers,
+                                   PointerType pointerType);
+     void generateMessagesFromSheEvents();
++    void catchUpMousePosition(const she::Event& sheEvent);
+     void handleMouseMove(const gfx::Point& mousePos,
+                          MouseButtons mouseButtons,
+                          KeyModifiers modifiers,

@@ -1,0 +1,32 @@
+Title: Look for fonts in FONTS:TrueType on AROS
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: The Unix font folders do not exist on AROS.
+Change: Use FONTS:TrueType and FONTS: on AROS.
+Scope: AROS
+Upstream: candidate
+Verification: Built for mainline AROS x86_64 (GCC 10.5, SDK nightly 20261110); LibreSprite starts on nightly 20261113 (pool v1-1, 2026-11-16)
+Removal: None planned.
+---
+diff --git a/src/base/fs_unix.h b/src/base/fs_unix.h
+index a7e442c262f3cfdda1c3647d9047c64afb77fe98..a313f08e7d7cde7945ebd76e77dc748e302942cb 100644
+--- a/src/base/fs_unix.h
++++ b/src/base/fs_unix.h
+@@ -235,6 +235,14 @@ std::vector<std::string> get_font_paths()
+     };
+ }
+ 
++#elif defined(__AROS__)
++
++std::vector<std::string> get_font_paths()
++{
++    // TrueType fonts of the system, then the font drawer itself
++    return { "FONTS:TrueType", "FONTS:" };
++}
++
+ #elif !__APPLE__
+ 
+ std::vector<std::string> get_font_paths()

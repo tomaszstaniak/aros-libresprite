@@ -1,0 +1,42 @@
+Title: AROS: drop '.' path components before system calls
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: LibreSprite creates drawers by asking for "dir/." (palettes, sessions). On the Raspberry Pi ENVARC: is on FAT, whose handler rejects the "." name: the first start stopped with "Error creating directory ENVARC:LibreSprite/palettes/.: Invalid argument". SFS on x86 accepted it.
+Change: base::to_system_path (patch 0025) removes "/./" and trailing "/." components before every file-system call on AROS.
+Scope: AROS
+Upstream: local-only
+Verification: Raspberry Pi (pool rpi-1, non-smp, nightly 20261110, 2026-11-16): first start with no ENVARC:LibreSprite works; new sprite, drawing, PNG save with Enter, Intuition menu, clean exit; AUTO chose OpenGL ("GUI_RENDERER=AUTO, gl.library present: OpenGL") and the system stayed up.
+Removal: AROS-specific.
+---
+diff --git a/src/base/system_path_aros.cpp b/src/base/system_path_aros.cpp
+index 47f8e6db921c5dec6a022acc23ed448ebb904dcb..36cdb178d52000ce5a7b6c0b71c80d5303d2d290 100644
+--- a/src/base/system_path_aros.cpp
++++ b/src/base/system_path_aros.cpp
+@@ -74,8 +74,23 @@ namespace {
+ 
+ } // anonymous namespace
+ 
+-std::string to_system_path(const std::string& utf8)
++// "." components ("dir/." to make sure a drawer exists, "a/./b"): POSIX
++// names for the same directory, but not names AmigaDOS knows; FAT on the
++// Raspberry Pi rejects them ("Invalid argument").
++static std::string without_dot_components(const std::string& path)
+ {
++  std::string out = path;
++  std::string::size_type pos;
++  while ((pos = out.find("/./")) != std::string::npos)
++    out.erase(pos, 2);
++  while (out.size() >= 2 && out.compare(out.size() - 2, 2, "/.") == 0)
++    out.erase(out.size() - 2);
++  return out;
++}
++
++std::string to_system_path(const std::string& path)
++{
++  const std::string utf8 = without_dot_components(path);
+   if (is_ascii(utf8))
+     return utf8;
+   std::string out;

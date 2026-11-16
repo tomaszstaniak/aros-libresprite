@@ -1,0 +1,26 @@
+Title: Do not pass --gc-sections when linking for AROS
+Repository: libarchive 3.8.11 (release archive)
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: CMakeLists.txt adds -Wl,--gc-sections for every system except Darwin and SunOS. AROS executables are relocatable ELF objects without an entry symbol; ld then fails with "gc-sections requires either an entry or an undefined symbol", so every configure link check fails and configuration stops (pid_t "doesn't exist").
+Change: Treat AROS like SunOS: no section garbage collection flags.
+Scope: all AROS targets
+Upstream: candidate
+Verification: libarchive configures and builds for mainline x86_64 (scripts/deps.py)
+Removal: when libarchive excludes AROS itself
+---
+diff --color -ru libarchive-3.8.11/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt	2026-10-30 21:34:55
++++ b/CMakeLists.txt	2026-11-16 10:53:40
+@@ -142,8 +142,9 @@
+   IF(CMAKE_SYSTEM_NAME MATCHES "Darwin")
+     SET(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-dead_strip")
+     SET(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-dead_strip")
+-  ELSEIF(CMAKE_SYSTEM_NAME MATCHES "SunOS")
+-    # SunOS linker doesn't support --gc-sections
++  ELSEIF(CMAKE_SYSTEM_NAME MATCHES "SunOS|AROS")
++    # SunOS linker doesn't support --gc-sections. AROS executables are
++    # relocatable objects without an entry point, which --gc-sections refuses.
+   ELSE()
+     # Place the functions and data into separate sections, allowing the linker
+     # to garbage collect the unused ones.

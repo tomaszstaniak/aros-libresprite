@@ -1,0 +1,447 @@
+Title: AROS clipboard backend for the clip library
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: On AROS the clip library used clip_none.cpp: copy and paste worked only inside LibreSprite; nothing reached or came from other programs (text or pictures).
+Change: clip/clip_aros.cpp on clipboard.device unit 0 with iffparse: text as FTXT (CHRS in the system character set plus a UTF8 chunk; reading prefers UTF8), pictures written as 24-bit ILBM like AROS Capture (what ilbm.datatype reads) and read through the datatypes (DTST_CLIPBOARD, PDTM_READPIXELARRAY RGBA, opaque unless the picture has an alpha mask), custom formats kept in the process and dropped when the clip ID changes. clip links base-lib, datatypes and iffparse on AROS.
+Scope: AROS
+Upstream: local-only (AROS backend; could be offered to the clip library later)
+Verification: mainline x86_64, pool v1-1, 2026-11-16: AROS Capture picture pasted (size taken for New Sprite), LibreSprite picture shown by MultiView CLIPBOARD, text to the Shell, Latin-2 FTXT pasted as UTF-8, own copy replaced by a newer Capture clip, own copy and paste inside LibreSprite; evidence docs/evidence/2026-11-16-clipboard-v1
+Removal: AROS-specific.
+---
+diff --git a/src/clip/CMakeLists.txt b/src/clip/CMakeLists.txt
+index 0d9555a18bec933b2ebf86bbc161d5e564db5c56..fc81ffe5ecb59893cd294268807da38366ab316c 100644
+--- a/src/clip/CMakeLists.txt
++++ b/src/clip/CMakeLists.txt
+@@ -59,6 +59,8 @@ elseif(UNIX)
+   else()
+     list(APPEND CLIP_SOURCES clip_none.cpp)
+   endif()
++elseif(CMAKE_SYSTEM_NAME STREQUAL "AROS")
++  list(APPEND CLIP_SOURCES clip_aros.cpp)
+ else()
+   list(APPEND CLIP_SOURCES clip_none.cpp)
+ endif()
+@@ -80,6 +82,9 @@ if(WIN32)
+       target_link_libraries(clip ${CLIP_WINDOWSCODECS_LIBRARY})
+     endif()
+   endif()
++elseif(CMAKE_SYSTEM_NAME STREQUAL "AROS")
++  # base-lib: system character set conversion
++  target_link_libraries(clip base-lib datatypes iffparse)
+ elseif(APPLE)
+   if(COCOA_LIBRARY)
+     target_link_libraries(clip ${COCOA_LIBRARY})
+diff --git a/src/clip/clip_aros.cpp b/src/clip/clip_aros.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..2f78a3595d0def1a295a9afa321ea5ad69eb960b
+--- /dev/null
++++ b/src/clip/clip_aros.cpp
+@@ -0,0 +1,405 @@
++// Clip Library
++// Copyright (c) 2026  LibreSprite contributors
++//
++// This file is released under the terms of the MIT license.
++// Read LICENSE.txt for more information.
++
++// AROS clipboard (clipboard.device unit 0, IFF):
++// - text: FTXT with a CHRS chunk in the system character set and a UTF8
++//   chunk; reading prefers UTF8.
++// - images: written as a 24-bit ILBM (what ilbm.datatype and other AROS
++//   programs read; it has no alpha), read through the datatypes, so any
++//   picture a datatype understands can be pasted.
++// - custom formats live in this process only; they are dropped as soon as
++//   another program writes the clipboard (the clip ID changes).
++
++#include "clip.h"
++#include "clip_lock_impl.h"
++
++#include "base/system_path.h"
++
++#include <datatypes/datatypes.h>
++#include <datatypes/datatypesclass.h>
++#include <datatypes/pictureclass.h>
++#include <devices/clipboard.h>
++#include <libraries/iffparse.h>
++#include <proto/datatypes.h>
++#include <proto/exec.h>
++#include <proto/iffparse.h>
++#include <proto/intuition.h>
++#include <proto/alib.h>
++
++#include <cstring>
++#include <map>
++#include <mutex>
++#include <string>
++#include <vector>
++
++#ifndef ID_ILBM
++#define ID_ILBM MAKE_ID('I','L','B','M')
++#endif
++#ifndef ID_BMHD
++#define ID_BMHD MAKE_ID('B','M','H','D')
++#endif
++#ifndef ID_BODY
++#define ID_BODY MAKE_ID('B','O','D','Y')
++#endif
++#ifndef ID_FTXT
++#define ID_FTXT MAKE_ID('F','T','X','T')
++#endif
++#ifndef ID_CHRS
++#define ID_CHRS MAKE_ID('C','H','R','S')
++#endif
++#ifndef ID_UTF8
++#define ID_UTF8 MAKE_ID('U','T','F','8')
++#endif
++
++namespace clip {
++
++namespace {
++
++
++  typedef std::vector<char> Buffer;
++
++  std::recursive_mutex g_mutex;
++  format g_last_format = 100;
++  std::map<format, Buffer> g_custom;   // custom formats, this process only
++  LONG g_custom_clip_id = -1;          // clip ID they belong to
++
++  // The ID of the clip currently on unit 0 (changes on every write).
++  LONG current_clip_id()
++  {
++    struct ClipboardHandle* ch = OpenClipboard(0);
++    if (!ch)
++      return -1;
++    ch->cbh_Req.io_Command = CBD_CURRENTREADID;
++    LONG id = (DoIO((struct IORequest*)&ch->cbh_Req) == 0) ? ch->cbh_Req.io_ClipID : -1;
++    CloseClipboard(ch);
++    return id;
++  }
++
++  void drop_stale_custom()
++  {
++    if (!g_custom.empty() && current_clip_id() != g_custom_clip_id)
++      g_custom.clear();
++  }
++
++  struct Iff {
++    struct IFFHandle* iff = nullptr;
++    bool open = false;
++
++    explicit Iff(LONG mode) {
++      iff = AllocIFF();
++      if (!iff)
++        return;
++      iff->iff_Stream = (IPTR)OpenClipboard(0);
++      if (!iff->iff_Stream)
++        return;
++      InitIFFasClip(iff);
++      open = (OpenIFF(iff, mode) == 0);
++    }
++    ~Iff() {
++      if (!iff)
++        return;
++      if (open)
++        CloseIFF(iff);
++      if (iff->iff_Stream)
++        CloseClipboard((struct ClipboardHandle*)iff->iff_Stream);
++      FreeIFF(iff);
++    }
++    // The clip ID this handle wrote (valid after CloseIFF).
++    LONG writtenId() {
++      if (open) {
++        CloseIFF(iff);
++        open = false;
++      }
++      return iff && iff->iff_Stream ?
++        ((struct ClipboardHandle*)iff->iff_Stream)->cbh_Req.io_ClipID : -1;
++    }
++  };
++
++  // Type of the FORM on the clipboard (ID_ILBM, ID_FTXT, ...), 0 if none.
++  ULONG clip_form_type()
++  {
++    Iff c(IFFF_READ);
++    if (!c.open)
++      return 0;
++    if (ParseIFF(c.iff, IFFPARSE_STEP) != 0)
++      return 0;
++    struct ContextNode* cn = CurrentChunk(c.iff);
++    return (cn && cn->cn_ID == ID_FORM) ? cn->cn_Type : 0;
++  }
++
++  bool read_text(std::string& utf8)
++  {
++    Iff c(IFFF_READ);
++    if (!c.open)
++      return false;
++    if (StopChunk(c.iff, ID_FTXT, ID_CHRS) != 0 ||
++        StopChunk(c.iff, ID_FTXT, ID_UTF8) != 0)
++      return false;
++    std::string chrs;
++    bool haveChrs = false, haveUtf8 = false;
++    while (ParseIFF(c.iff, IFFPARSE_SCAN) == 0) {
++      struct ContextNode* cn = CurrentChunk(c.iff);
++      if (!cn || cn->cn_Size <= 0)
++        continue;
++      std::string data(cn->cn_Size, '\0');
++      if (ReadChunkBytes(c.iff, &data[0], cn->cn_Size) != cn->cn_Size)
++        continue;
++      if (cn->cn_ID == ID_UTF8 && !haveUtf8) {
++        utf8 = data;
++        haveUtf8 = true;
++      }
++      else if (cn->cn_ID == ID_CHRS && !haveChrs) {
++        chrs = data;
++        haveChrs = true;
++      }
++    }
++    if (!haveUtf8 && haveChrs)
++      utf8 = base::from_system_path(chrs);
++    // C strings: stop at an embedded NUL
++    auto nul = utf8.find('\0');
++    if (nul != std::string::npos)
++      utf8.erase(nul);
++    return haveUtf8 || haveChrs;
++  }
++
++  LONG write_text(const std::string& utf8)
++  {
++    std::string chrs = base::to_system_text(utf8);
++    Iff c(IFFF_WRITE);
++    if (!c.open)
++      return -1;
++    bool ok =
++      PushChunk(c.iff, ID_FTXT, ID_FORM, IFFSIZE_UNKNOWN) == 0 &&
++      PushChunk(c.iff, 0, ID_CHRS, chrs.size()) == 0 &&
++      WriteChunkBytes(c.iff, (APTR)chrs.data(), chrs.size()) == (LONG)chrs.size() &&
++      PopChunk(c.iff) == 0 &&
++      PushChunk(c.iff, 0, ID_UTF8, utf8.size()) == 0 &&
++      WriteChunkBytes(c.iff, (APTR)utf8.data(), utf8.size()) == (LONG)utf8.size() &&
++      PopChunk(c.iff) == 0 &&
++      PopChunk(c.iff) == 0;
++    return ok ? c.writtenId() : -1;
++  }
++
++  // RGB(A) of pixel x in row src of an image with the given spec.
++  bool pixel_rgb(const image_spec& spec, const char* row, unsigned long x,
++                 uint8_t& r, uint8_t& g, uint8_t& b)
++  {
++    if (spec.bits_per_pixel != 32 && spec.bits_per_pixel != 24)
++      return false;
++    uint32_t c = 0;
++    const uint8_t* p = (const uint8_t*)row + x * (spec.bits_per_pixel / 8);
++    std::memcpy(&c, p, spec.bits_per_pixel / 8);   // little endian
++    r = uint8_t((c & spec.red_mask) >> spec.red_shift);
++    g = uint8_t((c & spec.green_mask) >> spec.green_shift);
++    b = uint8_t((c & spec.blue_mask) >> spec.blue_shift);
++    return true;
++  }
++
++  // A deep ILBM: per row, planes 0-7 red, 8-15 green, 16-23 blue, least
++  // significant bit first, no compression (as AROS Capture writes).
++  LONG write_ilbm(const image& img)
++  {
++    const image_spec& spec = img.spec();
++    if (spec.width == 0 || spec.height == 0 ||
++        spec.width > 65535 || spec.height > 65535)
++      return -1;
++    uint8_t r, g, b;
++    if (!pixel_rgb(spec, img.data(), 0, r, g, b))
++      return -1;
++
++    const ULONG rowbytes = ((spec.width + 15) / 16) * 2;
++    std::vector<UBYTE> row(rowbytes * 24);
++    UBYTE bmhd[20] = { 0 };
++    auto be16 = [](UBYTE* p, unsigned v) { p[0] = UBYTE(v >> 8); p[1] = UBYTE(v); };
++    be16(bmhd, spec.width);
++    be16(bmhd + 2, spec.height);
++    bmhd[8] = 24;       // planes
++    bmhd[14] = 1;       // aspect 1:1
++    bmhd[15] = 1;
++    be16(bmhd + 16, spec.width);
++    be16(bmhd + 18, spec.height);
++
++    Iff c(IFFF_WRITE);
++    if (!c.open)
++      return -1;
++    bool ok =
++      PushChunk(c.iff, ID_ILBM, ID_FORM, IFFSIZE_UNKNOWN) == 0 &&
++      PushChunk(c.iff, 0, ID_BMHD, sizeof(bmhd)) == 0 &&
++      WriteChunkBytes(c.iff, bmhd, sizeof(bmhd)) == (LONG)sizeof(bmhd) &&
++      PopChunk(c.iff) == 0 &&
++      PushChunk(c.iff, 0, ID_BODY, IFFSIZE_UNKNOWN) == 0;
++    for (unsigned long y = 0; ok && y < spec.height; ++y) {
++      const char* src = img.data() + spec.bytes_per_row * y;
++      std::fill(row.begin(), row.end(), 0);
++      for (unsigned long x = 0; x < spec.width; ++x) {
++        pixel_rgb(spec, src, x, r, g, b);
++        const uint8_t rgb[3] = { r, g, b };
++        const UBYTE bit = UBYTE(0x80 >> (x & 7));
++        const ULONG off = x >> 3;
++        for (int plane = 0; plane < 24; ++plane)
++          if (rgb[plane / 8] & (1 << (plane & 7)))
++            row[plane * rowbytes + off] |= bit;
++      }
++      ok = WriteChunkBytes(c.iff, &row[0], row.size()) == (LONG)row.size();
++    }
++    ok = ok && PopChunk(c.iff) == 0 && PopChunk(c.iff) == 0;
++    return ok ? c.writtenId() : -1;
++  }
++
++  // The clipboard picture through the datatypes, as 32-bit RGBA.
++  bool read_picture(image* out, image_spec* specOut)
++  {
++    Object* o = NewDTObject((APTR)0,
++                            DTA_SourceType, DTST_CLIPBOARD,
++                            DTA_GroupID, GID_PICTURE,
++                            PDTA_Remap, FALSE,
++                            PDTA_DestMode, PMODE_V43,
++                            TAG_DONE);
++    if (!o)
++      return false;
++    struct BitMapHeader* bmh = nullptr;
++    bool ok = GetDTAttrs(o, PDTA_BitMapHeader, (IPTR)&bmh, TAG_DONE) == 1 &&
++              bmh && bmh->bmh_Width > 0 && bmh->bmh_Height > 0;
++    image_spec spec;
++    if (ok) {
++      spec.width = bmh->bmh_Width;
++      spec.height = bmh->bmh_Height;
++      spec.bits_per_pixel = 32;
++      spec.bytes_per_row = spec.width * 4;
++      // PBPAFMT_RGBA: bytes R, G, B, A
++      spec.red_mask = 0x000000ff;   spec.red_shift = 0;
++      spec.green_mask = 0x0000ff00; spec.green_shift = 8;
++      spec.blue_mask = 0x00ff0000;  spec.blue_shift = 16;
++      spec.alpha_mask = 0xff000000; spec.alpha_shift = 24;
++      if (specOut)
++        *specOut = spec;
++    }
++    if (ok && out) {
++      image img(spec);
++      ok = DoMethod(o, PDTM_READPIXELARRAY, (IPTR)img.data(), PBPAFMT_RGBA,
++                    spec.bytes_per_row, 0, 0, spec.width, spec.height) != 0;
++      if (ok) {
++        // Most pictures carry no alpha: unless the picture has an alpha
++        // mask, make every pixel opaque.
++        if (bmh->bmh_Masking != mskHasAlpha) {
++          for (unsigned long i = 0; i < spec.width * spec.height; ++i)
++            img.data()[i * 4 + 3] = char(0xff);
++        }
++        *out = std::move(img);
++      }
++    }
++    DisposeDTObject(o);
++    return ok;
++  }
++
++} // anonymous namespace
++
++lock::impl::impl(void*) : m_locked(true) {
++  g_mutex.lock();
++}
++
++lock::impl::~impl() {
++  g_mutex.unlock();
++}
++
++bool lock::impl::clear() {
++  g_custom.clear();
++  g_custom_clip_id = -1;
++  return true;
++}
++
++bool lock::impl::is_convertible(format f) const {
++  if (f == text_format())
++    return clip_form_type() == ID_FTXT;
++  if (f == image_format()) {
++    ULONG type = clip_form_type();
++    if (type == ID_ILBM)
++      return true;
++    if (type == 0 || type == ID_FTXT)
++      return false;
++    image_spec spec;              // another picture format: ask the datatypes
++    return get_image_spec(spec);
++  }
++  drop_stale_custom();
++  return g_custom.find(f) != g_custom.end();
++}
++
++bool lock::impl::set_data(format f, const char* buf, size_t len) {
++  if (f == text_format()) {
++    std::string text(buf ? buf : "", buf ? len : 0);
++    auto nul = text.find('\0');
++    if (nul != std::string::npos)
++      text.erase(nul);
++    // Text replaces whatever this process had put on the clipboard.
++    g_custom.clear();
++    LONG id = write_text(text);
++    if (id < 0)
++      return false;
++    g_custom_clip_id = id;
++    return true;
++  }
++  Buffer& dst = g_custom[f];
++  dst.assign(buf, buf ? buf + len : buf);
++  // Belongs to whatever this process writes to the clipboard next (the
++  // image or text set with it), or to the current clip.
++  g_custom_clip_id = current_clip_id();
++  return true;
++}
++
++bool lock::impl::get_data(format f, char* buf, size_t len) const {
++  if (!buf)
++    return false;
++  if (f == text_format()) {
++    std::string text;
++    if (!read_text(text) || len < text.size() + 1)
++      return false;
++    std::memcpy(buf, text.c_str(), text.size() + 1);
++    return true;
++  }
++  drop_stale_custom();
++  auto it = g_custom.find(f);
++  if (it == g_custom.end() || len < it->second.size())
++    return false;
++  std::copy(it->second.begin(), it->second.end(), buf);
++  return true;
++}
++
++size_t lock::impl::get_data_length(format f) const {
++  if (f == text_format()) {
++    std::string text;
++    return read_text(text) ? text.size() + 1 : 0;
++  }
++  drop_stale_custom();
++  auto it = g_custom.find(f);
++  return it != g_custom.end() ? it->second.size() : 0;
++}
++
++bool lock::impl::set_image(const image& img) {
++  // Custom formats set just before belong to this clip.
++  std::map<format, Buffer> custom;
++  custom.swap(g_custom);
++  LONG id = write_ilbm(img);
++  if (id < 0)
++    return false;
++  g_custom.swap(custom);
++  g_custom_clip_id = id;
++  return true;
++}
++
++bool lock::impl::get_image(image& img) const {
++  return read_picture(&img, nullptr);
++}
++
++bool lock::impl::get_image_spec(image_spec& spec) const {
++  return read_picture(nullptr, &spec);
++}
++
++format register_format(const std::string&) {
++  std::lock_guard<std::recursive_mutex> guard(g_mutex);
++  return g_last_format++;
++}
++
++} // namespace clip

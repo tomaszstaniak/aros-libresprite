@@ -1,0 +1,59 @@
+Title: No dynamic loading on AROS
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: AROS has no dlfcn.h; base/dll_unix.h refuses to compile without it.
+Change: An AROS branch that reports every library as unavailable.
+Scope: AROS
+Upstream: local-only
+Verification: Built for mainline AROS x86_64 (GCC 10.5, SDK nightly 20261110); LibreSprite starts on nightly 20261113 (pool v1-1, 2026-11-16)
+Removal: When AROS gets dlopen.
+---
+diff --git a/src/base/dll.cpp b/src/base/dll.cpp
+index e4b52d3fccc6ffdf461ee642cc54bd231cd634c6..f364b463c51a21b59b47399a5a8fbcbe2d2e5ffe 100644
+--- a/src/base/dll.cpp
++++ b/src/base/dll.cpp
+@@ -12,6 +12,8 @@
+ 
+ #ifdef _WIN32
+   #include "base/dll_win32.h"
++#elif defined(__AROS__)
++  #include "base/dll_none.h"
+ #else
+   #include "base/dll_unix.h"
+ #endif
+diff --git a/src/base/dll_none.h b/src/base/dll_none.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..3173c73a345a9f586c931ed9c4a15b9b0283ddcb
+--- /dev/null
++++ b/src/base/dll_none.h
+@@ -0,0 +1,27 @@
++// LibreSprite | Copyright (C) 2026  LibreSprite contributors
++//
++// This file is released under the terms of the MIT license.
++// Read LICENSE.txt for more information.
++
++// For systems without dynamic loading of shared objects (AROS): loading
++// always fails, so callers take their "library not available" path.
++
++#include "base/string.h"
++
++namespace base {
++
++dll load_dll(const std::string&)
++{
++  return nullptr;
++}
++
++void unload_dll(dll)
++{
++}
++
++dll_proc get_dll_proc_base(dll, const char*)
++{
++  return nullptr;
++}
++
++} // namespace base

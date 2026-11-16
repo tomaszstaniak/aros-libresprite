@@ -1,0 +1,458 @@
+Title: AROS: file names in the system character set
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: AROS file systems and DOS use the system character set (ENV:CHARSET, e.g. ISO-8859-2), LibreSprite uses UTF-8: names with national characters were shown wrongly, could not be opened, and saving created names with UTF-8 bytes.
+Change: base/system_path.h: to_system_path / from_system_path (identity on other systems) and to_system_text (characters the set lacks become '?'), implemented with iconv in base/system_path_aros.cpp (charset from ENV:CHARSET, ISO-8859-1 without it). Used in base/fs_unix.h (stat, mkdir, rename, copy, unlink, chmod, rmdir, realpath, opendir/readdir, current and program path), base::open_file, FSTREAM_PATH, the file selector tree (directory entries and volume names) and the Intuition menu labels. base-lib links the kit libiconv (ICONV_INCLUDE_DIR, ICONV_LIBRARY).
+Scope: AROS
+Upstream: local-only (AROS-specific)
+Verification: mainline x86_64, pool v1-1, 2026-11-16, ENV:CHARSET ISO-8859-2: drawer "Gęś" and file "zażółć.png" (Latin-2 bytes) listed correctly in Open, opened, saved with Save As into "Gęś" under the same Latin-2 name (List in the Shell), Open Recent menu item in Latin-2; home view lists both names. Not tested: drag and drop of such a file, script filesystem API (uses std::filesystem directly, unconverted).
+Removal: AROS-specific.
+---
+diff --git a/src/app/file_system.cpp b/src/app/file_system.cpp
+index bc472cd3d08756dcc151f8433e26c67b29c7e97f..2c22f5411a0e29584d93cbf7a0479a06d4cb4851 100644
+--- a/src/app/file_system.cpp
++++ b/src/app/file_system.cpp
+@@ -19,6 +19,7 @@
+ 
+ #include "base/fs.h"
+ #include "base/path.h"
++#include "base/system_path.h"
+ #include "base/string.h"
+ #include "she/display.h"
+ #include "she/surface.h"
+@@ -466,7 +467,7 @@ const FileItemList& FileItem::children()
+       struct DosList* dl = LockDosList(LDF_VOLUMES | LDF_READ);
+       while ((dl = NextDosEntry(dl, LDF_VOLUMES)) != NULL) {
+         const char* name = (const char*)AROS_BSTR_ADDR(dl->dol_Name);
+-        volumes.push_back(std::string(name, AROS_BSTR_strlen(dl->dol_Name)) + ":");
++        volumes.push_back(base::from_system_path(std::string(name, AROS_BSTR_strlen(dl->dol_Name))) + ":");
+       }
+       UnLockDosList(LDF_VOLUMES | LDF_READ);
+ 
+@@ -479,12 +480,12 @@ const FileItemList& FileItem::children()
+     else
+ #endif
+     {
+-      DIR* dir = opendir(m_filename.c_str());
++      DIR* dir = opendir(base::to_system_path(m_filename).c_str());
+       if (dir) {
+         dirent* entry;
+         while ((entry = readdir(dir)) != NULL) {
+           FileItem* child;
+-          std::string fn = entry->d_name;
++          std::string fn = base::from_system_path(entry->d_name);
+           std::string fullfn = base::join_path(m_filename, fn);
+ 
+           if (fn == "." || fn == "..")
+diff --git a/src/app/ui/aros_menu_strip.cpp b/src/app/ui/aros_menu_strip.cpp
+index 8d77ff2e7643c5fdbc4744941cdc9df748bde640..34bddd42f5bb02cefabdeb1818aa0d7197f80bf8 100644
+--- a/src/app/ui/aros_menu_strip.cpp
++++ b/src/app/ui/aros_menu_strip.cpp
+@@ -34,6 +34,7 @@
+ #include "app/ui/keyboard_shortcuts.h"
+ #include "app/ui/main_window.h"
+ #include "app/ui_context.h"
++#include "base/system_path.h"
+ #include "she/aros_menu.h"
+ #include "ui/manager.h"
+ #include "ui/menu.h"
+@@ -100,7 +101,7 @@ namespace {
+   }
+ 
+   // Menu text: drop the '&' mnemonic markers; GadTools draws bytes of the
+-  // system character set, so keep plain ASCII.
++  // system character set.
+   std::string label(const std::string& text)
+   {
+     std::string out;
+@@ -111,16 +112,9 @@ namespace {
+           out += '&', ++i;
+         continue;
+       }
+-      if (c >= 0x80) {
+-        // skip the rest of a UTF-8 sequence
+-        while (i + 1 < text.size() && (static_cast<unsigned char>(text[i + 1]) & 0xC0) == 0x80)
+-          ++i;
+-        out += '?';
+-        continue;
+-      }
+       out += static_cast<char>(c);
+     }
+-    return out;
++    return base::to_system_text(out);
+   }
+ 
+   // Amiga+letter for a command whose shortcut is Ctrl+letter.
+diff --git a/src/base/CMakeLists.txt b/src/base/CMakeLists.txt
+index 72426964b2c15a8c6fc7aaa65ad3800275825c2a..973f05cc90b9659a93c69e034e5b32c785585fb7 100644
+--- a/src/base/CMakeLists.txt
++++ b/src/base/CMakeLists.txt
+@@ -69,10 +69,23 @@ if(WIN32)
+     win32_exception.cpp)
+ endif()
+ 
++if(CMAKE_SYSTEM_NAME STREQUAL "AROS")
++  set(BASE_SOURCES ${BASE_SOURCES}
++    system_path_aros.cpp)
++endif()
++
+ # TODO remove dependency with observable library
+ add_library(base-lib ${BASE_SOURCES})
+ target_link_libraries(base-lib obs modp_b64)
+ 
++if(CMAKE_SYSTEM_NAME STREQUAL "AROS")
++  # Iconv for file names in the system character set
++  find_path(ICONV_INCLUDE_DIR iconv.h)
++  find_library(ICONV_LIBRARY NAMES iconv)
++  target_include_directories(base-lib PRIVATE ${ICONV_INCLUDE_DIR})
++  target_link_libraries(base-lib ${ICONV_LIBRARY})
++endif()
++
+ if(WIN32)
+   add_definitions(-D_CRT_SECURE_NO_WARNINGS)
+   target_link_libraries(base-lib dbghelp shlwapi)
+diff --git a/src/base/file_handle.cpp b/src/base/file_handle.cpp
+index 79baa172a8d8cf5f724186087ea09dbaf4cc3954..3783cc9da27f27a7179952c0a26fbf66ec3dae10 100644
+--- a/src/base/file_handle.cpp
++++ b/src/base/file_handle.cpp
+@@ -9,6 +9,7 @@
+ #endif
+ 
+ #include "base/file_handle.h"
++#include "base/system_path.h"
+ 
+ #include "base/string.h"
+ 
+@@ -37,7 +38,7 @@ FILE* open_file_raw(const string& filename, const string& mode)
+   return _wfopen(from_utf8(filename).c_str(),
+                  from_utf8(mode).c_str());
+ #else
+-  return fopen(filename.c_str(), mode.c_str());
++  return fopen(to_system_path(filename).c_str(), mode.c_str());
+ #endif
+ }
+ 
+diff --git a/src/base/fs_unix.h b/src/base/fs_unix.h
+index cbff9527282c41668e81a2c963c0c09eed0b892d..47cb3396dac86957cb5f98335556a668efdeca89 100644
+--- a/src/base/fs_unix.h
++++ b/src/base/fs_unix.h
+@@ -31,6 +31,7 @@
+ #endif
+ 
+ #include "base/path.h"
++#include "base/system_path.h"
+ #include "base/time.h"
+ 
+ #define MAXPATHLEN 1024
+@@ -45,18 +46,18 @@ namespace base {
+ bool is_file(const std::string& path)
+ {
+   struct stat sts;
+-  return (stat(path.c_str(), &sts) == 0 && S_ISREG(sts.st_mode)) ? true: false;
++  return (stat(to_system_path(path).c_str(), &sts) == 0 && S_ISREG(sts.st_mode)) ? true: false;
+ }
+ 
+ bool is_directory(const std::string& path)
+ {
+   struct stat sts;
+-  return (stat(path.c_str(), &sts) == 0 && S_ISDIR(sts.st_mode)) ? true: false;
++  return (stat(to_system_path(path).c_str(), &sts) == 0 && S_ISDIR(sts.st_mode)) ? true: false;
+ }
+ 
+ void make_directory(const std::string& path)
+ {
+-  int result = mkdir(path.c_str(), 0777);
++  int result = mkdir(to_system_path(path).c_str(), 0777);
+   if (result < 0) {
+     throw std::runtime_error("Error creating directory " + path + ": " + strerror(errno));
+   }
+@@ -65,12 +66,12 @@ void make_directory(const std::string& path)
+ size_t file_size(const std::string& path)
+ {
+   struct stat sts;
+-  return (stat(path.c_str(), &sts) == 0) ? sts.st_size: 0;
++  return (stat(to_system_path(path).c_str(), &sts) == 0) ? sts.st_size: 0;
+ }
+ 
+ void move_file(const std::string& src, const std::string& dst)
+ {
+-  int result = std::rename(src.c_str(), dst.c_str());
++  int result = std::rename(to_system_path(src).c_str(), to_system_path(dst).c_str());
+   if (result != 0)
+     // TODO add errno into the exception
+     throw std::runtime_error("Error moving file");
+@@ -78,12 +79,12 @@ void move_file(const std::string& src, const std::string& dst)
+ 
+ void copy_file(const std::string& src, const std::string& dst)
+ {
+-    std::filesystem::copy_file(src, dst, std::filesystem::copy_options::overwrite_existing);
++    std::filesystem::copy_file(to_system_path(src), to_system_path(dst), std::filesystem::copy_options::overwrite_existing);
+ }
+ 
+ void delete_file(const std::string& path)
+ {
+-  int result = unlink(path.c_str());
++  int result = unlink(to_system_path(path).c_str());
+   if (result != 0)
+     // TODO add errno into the exception
+     throw std::runtime_error("Error deleting file");
+@@ -92,15 +93,15 @@ void delete_file(const std::string& path)
+ bool has_readonly_attr(const std::string& path)
+ {
+   struct stat sts;
+-  return (stat(path.c_str(), &sts) == 0 && ((sts.st_mode & S_IWUSR) == 0));
++  return (stat(to_system_path(path).c_str(), &sts) == 0 && ((sts.st_mode & S_IWUSR) == 0));
+ }
+ 
+ void remove_readonly_attr(const std::string& path)
+ {
+   struct stat sts;
+-  int result = stat(path.c_str(), &sts);
++  int result = stat(to_system_path(path).c_str(), &sts);
+   if (result == 0) {
+-    result = chmod(path.c_str(), sts.st_mode | S_IWUSR);
++    result = chmod(to_system_path(path).c_str(), sts.st_mode | S_IWUSR);
+     if (result != 0)
+       // TODO add errno into the exception
+       throw std::runtime_error("Error removing read-only attribute");
+@@ -110,7 +111,7 @@ void remove_readonly_attr(const std::string& path)
+ Time get_modification_time(const std::string& path)
+ {
+   struct stat sts;
+-  int result = stat(path.c_str(), &sts);
++  int result = stat(to_system_path(path).c_str(), &sts);
+   if (result != 0)
+     return Time();
+ 
+@@ -122,7 +123,7 @@ Time get_modification_time(const std::string& path)
+ 
+ void remove_directory(const std::string& path)
+ {
+-  int result = rmdir(path.c_str());
++  int result = rmdir(to_system_path(path).c_str());
+   if (result != 0) {
+     // TODO add errno into the exception
+     throw std::runtime_error("Error removing directory");
+@@ -131,7 +132,7 @@ void remove_directory(const std::string& path)
+ 
+ std::string get_current_path()
+ {
+-  return std::filesystem::current_path().string();
++  return from_system_path(std::filesystem::current_path().string());
+ }
+ 
+ std::string get_app_path()
+@@ -148,7 +149,7 @@ std::string get_app_path()
+   if (!GetProgramName(&name[0], name.size()))
+     strcpy(&name[0], "LibreSprite");
+   AddPart(&path[0], FilePart(&name[0]), path.size());
+-  return std::string(&path[0]);
++  return from_system_path(std::string(&path[0]));
+ 
+ #else
+ 
+@@ -207,22 +208,22 @@ std::string get_user_docs_folder()
+ std::string get_canonical_path(const std::string& path)
+ {
+   char buffer[PATH_MAX];
+-  if (realpath(path.c_str(), buffer) == NULL) {
++  if (realpath(to_system_path(path).c_str(), buffer) == NULL) {
+     return path;
+   }
+-  return buffer;
++  return from_system_path(buffer);
+ }
+ 
+ std::vector<std::string> list_files(const std::string& path)
+ {
+   std::vector<std::string> files;
+-  DIR* handle = opendir(path.c_str());
++  DIR* handle = opendir(to_system_path(path).c_str());
+   if (handle) {
+     dirent* item;
+     while ((item = readdir(handle)) != nullptr) {
+       std::string filename = item->d_name;
+       if (filename != "." && filename != "..")
+-        files.push_back(filename);
++        files.push_back(from_system_path(filename));
+     }
+ 
+     closedir(handle);
+diff --git a/src/base/fstream_path.h b/src/base/fstream_path.h
+index cfbcd2096a804937853025a45bc70f8bee05b48d..a972bd38b289ee4827f66e80e6b1d394fc4408f5 100644
+--- a/src/base/fstream_path.h
++++ b/src/base/fstream_path.h
+@@ -13,6 +13,9 @@
+   #else
+     #define FSTREAM_PATH(path) (base::from_utf8(path).c_str())
+   #endif
++#elif defined(__AROS__)
++  #include "base/system_path.h"
++  #define FSTREAM_PATH(path) (base::to_system_path(std::string(path)).c_str())
+ #else
+   #define FSTREAM_PATH(path) (std::string(path).c_str())
+ #endif
+diff --git a/src/base/system_path.h b/src/base/system_path.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..63792feb742b16272e7f82efcb4f657746a79113
+--- /dev/null
++++ b/src/base/system_path.h
+@@ -0,0 +1,28 @@
++// Aseprite Base Library
++// Copyright (c) 2026  LibreSprite contributors
++//
++// This file is released under the terms of the MIT license.
++// Read LICENSE.txt for more information.
++
++#pragma once
++
++#include <string>
++
++namespace base {
++
++  // File names inside the program are UTF-8. On AROS the file system and
++  // DOS use the system character set (ENV:CHARSET), so names are converted
++  // where they are passed to or come from the system. Elsewhere these
++  // return the name unchanged.
++#ifdef __AROS__
++  std::string to_system_path(const std::string& utf8);
++  std::string from_system_path(const std::string& name);
++  // Text for system widgets (menus, titles): characters the system
++  // character set lacks become '?'.
++  std::string to_system_text(const std::string& utf8);
++#else
++  inline const std::string& to_system_path(const std::string& utf8) { return utf8; }
++  inline const std::string& from_system_path(const std::string& name) { return name; }
++#endif
++
++} // namespace base
+diff --git a/src/base/system_path_aros.cpp b/src/base/system_path_aros.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..47f8e6db921c5dec6a022acc23ed448ebb904dcb
+--- /dev/null
++++ b/src/base/system_path_aros.cpp
+@@ -0,0 +1,121 @@
++// Aseprite Base Library
++// Copyright (c) 2026  LibreSprite contributors
++//
++// This file is released under the terms of the MIT license.
++// Read LICENSE.txt for more information.
++
++#ifdef HAVE_CONFIG_H
++#include "config.h"
++#endif
++
++#include "base/system_path.h"
++
++#include <dos/var.h>
++#include <proto/dos.h>
++
++#include <iconv.h>
++
++#include <cerrno>
++#include <cstring>
++#include <mutex>
++
++namespace base {
++
++namespace {
++
++  // The system character set as named in ENV:CHARSET (codesets.library names,
++  // e.g. "ISO-8859-2"; "ISO-8859-1 + Euro" is read as ISO-8859-1).
++  const std::string& system_charset()
++  {
++    static std::string charset;
++    static std::once_flag once;
++    std::call_once(once, []{
++      char buf[64];
++      if (GetVar("CHARSET", buf, sizeof(buf), GVF_GLOBAL_ONLY) > 0) {
++        charset = buf;
++        auto plus = charset.find('+');
++        if (plus != std::string::npos)
++          charset.erase(plus);
++        while (!charset.empty() && charset.back() == ' ')
++          charset.pop_back();
++      }
++      if (charset.empty())
++        charset = "ISO-8859-1";
++    });
++    return charset;
++  }
++
++  bool is_ascii(const std::string& s)
++  {
++    for (unsigned char c : s)
++      if (c >= 0x80)
++        return false;
++    return true;
++  }
++
++  // Whole-string conversion; false when a character cannot be converted.
++  bool convert(const char* to, const char* from, const std::string& in, std::string& out)
++  {
++    iconv_t cd = iconv_open(to, from);
++    if (cd == (iconv_t)-1)
++      return false;
++    out.assign(in.size() * 4 + 4, '\0');
++    char* src = const_cast<char*>(in.data());
++    size_t srcLeft = in.size();
++    char* dst = &out[0];
++    size_t dstLeft = out.size();
++    size_t r = iconv(cd, &src, &srcLeft, &dst, &dstLeft);
++    iconv_close(cd);
++    if (r == (size_t)-1 || srcLeft != 0)
++      return false;
++    out.resize(out.size() - dstLeft);
++    return true;
++  }
++
++} // anonymous namespace
++
++std::string to_system_path(const std::string& utf8)
++{
++  if (is_ascii(utf8))
++    return utf8;
++  std::string out;
++  // A name the system character set cannot hold cannot exist on disk:
++  // pass it on unchanged and let the call fail.
++  if (convert(system_charset().c_str(), "UTF-8", utf8, out))
++    return out;
++  return utf8;
++}
++
++std::string to_system_text(const std::string& utf8)
++{
++  if (is_ascii(utf8))
++    return utf8;
++  std::string out, piece;
++  for (size_t i = 0; i < utf8.size(); ) {
++    unsigned char c = utf8[i];
++    size_t n = (c < 0x80) ? 1 : ((c & 0xE0) == 0xC0) ? 2 : ((c & 0xF0) == 0xE0) ? 3 : ((c & 0xF8) == 0xF0) ? 4 : 1;
++    if (i + n > utf8.size())
++      n = utf8.size() - i;
++    if (c < 0x80)
++      out += char(c);
++    else if (convert(system_charset().c_str(), "UTF-8", utf8.substr(i, n), piece))
++      out += piece;
++    else
++      out += '?';
++    i += n;
++  }
++  return out;
++}
++
++std::string from_system_path(const std::string& name)
++{
++  if (is_ascii(name))
++    return name;
++  std::string out;
++  if (convert("UTF-8", system_charset().c_str(), name, out) ||
++      convert("UTF-8", "ISO-8859-1", name, out))
++    return out;
++  return name;
++}
++
++} // namespace base

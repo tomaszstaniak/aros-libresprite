@@ -1,0 +1,30 @@
+Title: Magnetic button: click when the Enter release was already dispatched
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: With the focus elsewhere (Save/Open file name field), Enter is caught by the focus-magnet OK button, which moves the focus and calls Manager::dispatchMessages() before setSelected(true). When the key release is already queued (key press and release in one event batch, as on a busy or slow system), that nested dispatch delivers the key-up to the old focus first; the button stays selected and never clicks, so Enter does not confirm the dialog.
+Change: After setSelected(true), if the key is no longer pressed (she::is_key_pressed), the button generates its select signal at once.
+Scope: all platforms (ui library)
+Upstream: candidate
+Verification: mainline x86_64, pool v1-1, 2026-11-16: Enter in Save (RAM:enter1.png), keypad Enter in Save As (RAM:keypad2.png) and Enter in Open (RAM:enter1.png) all confirm; Enter in New Sprite still works; typed names arrive complete. Diagnosed with a temporary log in Widget::sendMessage: the Enter key-up was consumed by the file name ComboBoxEntry inside the OK button key-down handler
+Removal: when upstream fixes the magnet path.
+---
+diff --git a/src/ui/button.cpp b/src/ui/button.cpp
+index f2433bea7c79952cf48a5e688dcfda7caa9822a1..46cb0ad38611d6f3faa0352624b97fc6ace1d29e 100644
+--- a/src/ui/button.cpp
++++ b/src/ui/button.cpp
+@@ -134,6 +134,12 @@ bool ButtonBase::onProcessMessage(Message* msg)
+             manager()->dispatchMessages();
+ 
+             setSelected(true);
++
++            // That dispatch may already have delivered the key-up of
++            // this key (both arrive together on a busy system), so
++            // the button would wait for a release that never comes.
++            if (!she::is_key_pressed(scancode))
++              generateButtonSelectSignal();
+             return true;
+           }
+         }

@@ -1,0 +1,28 @@
+Title: Drop the trailing /. from the sessions folder
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: The sessions folder is found as "sessions/."; new session folders became ".../sessions/./<time>", and AmigaDOS has no "." entry, so creating them failed ("Error creating directory").
+Change: Drop a trailing "/." from the sessions folder.
+Scope: all platforms
+Upstream: candidate
+Verification: Built for mainline AROS x86_64 (GCC 10.5, SDK nightly 20261110); LibreSprite starts on nightly 20261113 (pool v1-1, 2026-11-16)
+Removal: When upstream stops using "sessions/.".
+---
+diff --git a/src/app/crash/data_recovery.cpp b/src/app/crash/data_recovery.cpp
+index 7ff1eaec4356eac6a01d9b232aa8f23a0d6897ee..908b91d0a95187b81df3e0c3d78a8ec40376b723 100644
+--- a/src/app/crash/data_recovery.cpp
++++ b/src/app/crash/data_recovery.cpp
+@@ -28,6 +28,10 @@ DataRecovery::DataRecovery(doc::Context* ctx)
+   ResourceFinder rf;
+   rf.includeUserDir(base::join_path("sessions", ".").c_str());
+   std::string sessionsDir = rf.getFirstOrCreateDefault();
++  // "sessions/." only makes ResourceFinder create the drawer; the "." itself
++  // is not a directory name everywhere (AmigaDOS has no "." entry).
++  if (sessionsDir.size() >= 2 && sessionsDir.compare(sessionsDir.size() - 2, 2, "/.") == 0)
++    sessionsDir.erase(sessionsDir.size() - 2);
+ 
+   // Existent sessions
+   TRACE("DataRecovery: Listing sessions from '%s'\n", sessionsDir.c_str());

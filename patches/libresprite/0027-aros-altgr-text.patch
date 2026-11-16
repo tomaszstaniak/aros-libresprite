@@ -1,0 +1,36 @@
+Title: AROS: text typed with AltGr is not an Alt shortcut
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: On AROS the right Alt key is AltGr for national characters (Polish keymap pc105_pl: AltGr+o = ó). LibreSprite received those characters with the Alt modifier and the letter scancode, so AltGr+o pressed the "&OK" button of the Save dialog instead of typing ó (a file x.ase was saved).
+Change: In the SDL3 back end on AROS, a text event typed while the right Alt (and not the left Alt) is held carries no Alt modifier and no scancode. The back end key state is used because SDL_GetModState() does not report the right Alt on AROS (logged on v1-1: mod=0 with right Alt held). The left Alt keeps its shortcut meaning.
+Scope: AROS (she/sdl3)
+Upstream: local-only
+Verification: mainline x86_64, pool v1-1, 2026-11-16, SetKeyboard pc105_pl, ENV:CHARSET ISO-8859-2: x + AltGr a c e l n o s x z, Shift+AltGr a l typed "xąćęłńóśźżĄŁ" into the Save dialog file name; the dialog stayed open. Before the change AltGr+o pressed OK.
+Removal: when the AROS SDL3 driver reports AltGr as SDL_KMOD_MODE.
+---
+diff --git a/src/she/sdl3/she.cpp b/src/she/sdl3/she.cpp
+index b3a5eb8b86dccb97141188bad0077ef113501c0d..a3b6cdbf588e7fa05ab19d048b9e544772bbf306 100644
+--- a/src/she/sdl3/she.cpp
++++ b/src/she/sdl3/she.cpp
+@@ -670,6 +670,18 @@ namespace she {
+           base::utf8_const_iterator end{textString.end()};
+           Event event;
+           event.setModifiers(getSheModifiers());
++#ifdef __AROS__
++          // The right Alt key is AltGr on national keyboards (Polish ą, ó,
++          // ...): a character typed with it is text, not an Alt shortcut or
++          // a button mnemonic.
++          // (SDL's mod state does not show the right Alt on AROS; use the
++          // key state of this back end.)
++          bool altGrText = modifiers.at(SDLK_RALT).isPressed && !modifiers.at(SDLK_LALT).isPressed;
++          if (altGrText) {
++            event.setModifiers(she::KeyModifiers(event.modifiers() & ~she::kKeyAltModifier));
++            lastScancodeSDL = SDL_SCANCODE_UNKNOWN;
++          }
++#endif
+           for (auto it = begin; it != end; ++it) {
+             event.setType(Event::KeyDown);
+             event.setUnicodeChar(*it);

@@ -1,0 +1,84 @@
+Title: AROS: stop cleanly when the stack cannot be allocated
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: The stack entry (0031) continued on the small stack when the larger one could not be allocated, which only moves the crash later.
+Change: When AllocMem fails the entry prints "LibreSprite needs N KB of free memory for its stack." (to the Shell; a requester on a Workbench start), sets __startup_error to RETURN_FAIL and does not continue the start-up. The message code uses the entry's SysBase: the global one is not set yet at priority -60 (the first version crashed in OpenLibrary through it).
+Scope: AROS
+Upstream: local-only
+Verification: ABIv11 (AROS One, pool v11-3, 2026-11-16): a test program with this entry and __stack = 0xF0000000 printed the message and returned 20 without reaching main, with Stack 262144 and with Stack 9000000.
+Removal: with 0031.
+---
+diff --git a/src/main/aros_stack.c b/src/main/aros_stack.c
+index 2bfa0f7920e3368e09223d7d6188e3492b9116be..a67e16a652277e1c2317d9d089253b4174701bcb 100644
+--- a/src/main/aros_stack.c
++++ b/src/main/aros_stack.c
+@@ -17,11 +17,47 @@
+ #include <aros/startup.h>
+ #include <aros/symbolsets.h>
+ #include <exec/memory.h>
++#include <exec/rawfmt.h>
+ #include <exec/tasks.h>
++#include <dos/dos.h>
++#include <intuition/intuition.h>
++#include <proto/dos.h>
+ #include <proto/exec.h>
++#include <proto/intuition.h>
+ 
+ extern unsigned long __stack;
+ 
++/* Before the C library is set up: dos.library to a Shell, otherwise
++   (Workbench start) a requester. The global SysBase is not set yet at this
++   point of the start-up: use the one the entry was given. */
++static void not_enough_memory(struct ExecBase *SysBase, IPTR want)
++{
++    char text[128];
++    struct Library *DOSBase = OpenLibrary((CONST_STRPTR)"dos.library", 36);
++    struct Library *IntuitionBase;
++    IPTR args[1];
++
++    args[0] = want / 1024;
++    RawDoFmt((CONST_STRPTR)"LibreSprite needs %lu KB of free memory for its stack.\n",
++             (RAWARG)args, RAWFMTFUNC_STRING, text);
++    if (DOSBase) {
++        BPTR out = Output();
++        if (out) {
++            FPuts(out, (CONST_STRPTR)text);
++            CloseLibrary(DOSBase);
++            return;
++        }
++        CloseLibrary(DOSBase);
++    }
++    IntuitionBase = OpenLibrary((CONST_STRPTR)"intuition.library", 36);
++    if (IntuitionBase) {
++        struct EasyStruct es = { sizeof(struct EasyStruct), 0, (CONST_STRPTR)"LibreSprite",
++                                 (CONST_STRPTR)"%s", (CONST_STRPTR)"OK" };
++        EasyRequest(NULL, &es, NULL, (IPTR)text);
++        CloseLibrary(IntuitionBase);
++    }
++}
++
+ static void libresprite_stack(struct ExecBase *SysBase)
+ {
+     struct Task *me = FindTask(NULL);
+@@ -31,10 +67,17 @@ static void libresprite_stack(struct ExecBase *SysBase)
+     struct StackSwapArgs args = { { 0 } };
+     UBYTE *stack;
+ 
+-    if (want <= have || !(stack = AllocMem(want, MEMF_ANY))) {
++    if (want <= have) {
+         __startup_entries_next();
+         return;
+     }
++    stack = AllocMem(want, MEMF_ANY);
++    if (!stack) {
++        /* Running on the small stack would crash later: stop here. */
++        not_enough_memory(SysBase, want);
++        __startup_error = RETURN_FAIL;
++        return;
++    }
+     sss.stk_Lower = stack;
+     sss.stk_Upper = stack + want;
+     sss.stk_Pointer = sss.stk_Upper;

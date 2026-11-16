@@ -1,0 +1,30 @@
+Title: Treat a typed name with a volume as an absolute path on AROS
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: A file name typed in the file selector was always joined to the current folder unless it began with "/". "RAM:cross.png" typed while SYS: was shown saved SYS:cross.png.
+Change: On AROS, as on Windows, a name with a colon is an absolute path.
+Scope: AROS
+Upstream: candidate
+Verification: mainline x86_64, pool v1-1, 2026-11-16 (see the patch series record)
+Removal: when upstream handles AROS paths.
+---
+diff --git a/src/app/ui/file_selector.cpp b/src/app/ui/file_selector.cpp
+index 6ccaba17c72f68b8adee97c0f8339e84ca76b186..3a7d81eee242aafd3689b8973b62686ee09f4916 100644
+--- a/src/app/ui/file_selector.cpp
++++ b/src/app/ui/file_selector.cpp
+@@ -657,9 +657,10 @@ again:
+           buf = fn;
+ #endif
+         }
+-#ifdef _WIN32
++#if defined(_WIN32) || defined(__AROS__)
+         // does the file-name entry have colon?
+-        else if (fn.find(':') != std::string::npos) { // absolute path on Windows
++        // (absolute path on Windows; volume or assign name on AROS, "Work:Art/x.png")
++        else if (fn.find(':') != std::string::npos) {
+           if (fn.size() == 2 && fn[1] == ':') {
+             buf = base::join_path(fn, "");
+           }

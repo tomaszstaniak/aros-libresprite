@@ -1,0 +1,26 @@
+Title: SDL3 backend: map Return to kKeyEnter and keypad Enter to kKeyEnterPad
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: keyCodeMapping lists SDLK_KP_ENTER twice (as kKeyEnter and as kKeyEnterPad); the first wins, so keypad Enter never reports kKeyEnterPad, and the reverse table used by she::is_key_pressed(kKeyEnter) may point at the keypad entry. Return itself is mapped through SDL_Keycode(13).
+Change: The first entry becomes SDLK_RETURN -> kKeyEnter (same as the existing SDL_Keycode(13) entry), so SDLK_KP_ENTER maps only to kKeyEnterPad.
+Scope: all platforms with the SDL3 backend
+Upstream: candidate
+Verification: mainline x86_64, pool v1-1, 2026-11-16: Enter in Save (RAM:enter1.png), keypad Enter in Save As (RAM:keypad2.png) and Enter in Open (RAM:enter1.png) all confirm; Enter in New Sprite still works; typed names arrive complete
+Removal: when upstream fixes the table.
+---
+diff --git a/src/she/sdl3/she.cpp b/src/she/sdl3/she.cpp
+index cc7ca150b00866f6f2ccc04f70ef581aabea60d5..b3a5eb8b86dccb97141188bad0077ef113501c0d 100644
+--- a/src/she/sdl3/she.cpp
++++ b/src/she/sdl3/she.cpp
+@@ -207,7 +207,7 @@ static std::unordered_map<SDL_Keycode, Modifier> keyCodeMapping = {
+   {SDLK_TAB, she::kKeyTab},
+   {SDLK_LEFTBRACKET, she::kKeyOpenbrace},
+   {SDLK_RIGHTBRACKET, she::kKeyClosebrace},
+-  {SDLK_KP_ENTER, she::kKeyEnter},
++  {SDLK_RETURN, she::kKeyEnter},
+   {SDLK_COLON, she::kKeyColon},
+   {SDLK_APOSTROPHE, she::kKeyQuote},
+   {SDLK_BACKSLASH, she::kKeyBackslash},

@@ -1,0 +1,35 @@
+Title: Name the directory and the reason when it cannot be created
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: "Error creating directory" did not say which directory or why.
+Change: Add the path and strerror(errno) to the message.
+Scope: all platforms
+Upstream: candidate
+Verification: Built for mainline AROS x86_64 (GCC 10.5, SDK nightly 20261110); LibreSprite starts on nightly 20261113 (pool v1-1, 2026-11-16)
+Removal: When upstream reports the path and reason.
+---
+diff --git a/src/base/fs_unix.h b/src/base/fs_unix.h
+index ed3fd00ed1f1c10423680116ad58d704c32eceb5..cbff9527282c41668e81a2c963c0c09eed0b892d 100644
+--- a/src/base/fs_unix.h
++++ b/src/base/fs_unix.h
+@@ -9,6 +9,7 @@
+ #include <sys/types.h>
+ #include <unistd.h>
+ 
++#include <cerrno>
+ #include <climits>              // Required for PATH_MAX
+ #include <cstdio>               // Required for rename()
+ #include <cstdlib>
+@@ -57,8 +58,7 @@ void make_directory(const std::string& path)
+ {
+   int result = mkdir(path.c_str(), 0777);
+   if (result < 0) {
+-    // TODO add errno into the exception
+-    throw std::runtime_error("Error creating directory");
++    throw std::runtime_error("Error creating directory " + path + ": " + strerror(errno));
+   }
+ }
+ 

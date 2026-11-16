@@ -1,0 +1,59 @@
+Title: AROS: use the HTTPServer stub
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: server_script.cpp uses cpp-httplib (see 0005).
+Change: Use the existing web-build stub of HTTPServer on AROS, with its own message.
+Scope: AROS
+Upstream: local-only
+Verification: Built for mainline AROS x86_64 (GCC 10.5, SDK nightly 20261110); LibreSprite starts on nightly 20261113 (pool v1-1, 2026-11-16)
+Removal: With 0005.
+---
+diff --git a/src/app/script/api/server_script.cpp b/src/app/script/api/server_script.cpp
+index b008e4fd4807b9be699bc0c669fd1d4fb3b212e5..8618e3477da42165e0aa834c31f7f87d0e174f2b 100644
+--- a/src/app/script/api/server_script.cpp
++++ b/src/app/script/api/server_script.cpp
+@@ -18,7 +18,7 @@
+ //    freezes the UI (true of the whole script API).
+ //  - There is no per-request timeout.
+ 
+-#ifndef __EMSCRIPTEN__
++#if !defined(__EMSCRIPTEN__) && !defined(__AROS__)
+ 
+ #include "delta/Extension.hpp"
+ #include "delta/JSON.hpp"
+@@ -757,4 +757,4 @@ void Server::setServerResponse(std::uint64_t reqId, JSON::Value rsp, JSON::Value
+ 
+ static di::provide<Extension, ServerExtension> serverExt{"server"};
+ 
+-#endif // __EMSCRIPTEN__
++#endif // !__EMSCRIPTEN__ && !__AROS__
+diff --git a/src/app/script/api/server_script_wasm.cpp b/src/app/script/api/server_script_wasm.cpp
+index a7560f993b851bad47f467c952c0e3eb1e819d30..4ebbd7ef4ca318eab323353bd2ce34ca0f064a85 100644
+--- a/src/app/script/api/server_script_wasm.cpp
++++ b/src/app/script/api/server_script_wasm.cpp
+@@ -9,8 +9,9 @@
+ // so the class exists for API compatibility but does nothing: the
+ // constructor records an error, start() returns 0, and the other members
+ // report that state. The native build uses server_script.cpp instead.
++// AROS uses this stub too until the server has an AROS socket layer.
+ 
+-#if defined(__EMSCRIPTEN__)
++#if defined(__EMSCRIPTEN__) || defined(__AROS__)
+ 
+ #include "delta/Extension.hpp"
+ #include "delta/JSON.hpp"
+@@ -22,7 +23,11 @@
+ class Server {
+ public:
+   explicit Server(JSON::Value&) {
++#if defined(__AROS__)
++    error_ = "HTTPServer is not available on AROS yet";
++#else
+     error_ = "HTTPServer is not supported in the web build";
++#endif
+   }
+ 
+   int start() { return 0; }

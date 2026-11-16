@@ -1,0 +1,43 @@
+Title: Keep user files in ENVARC:LibreSprite on AROS
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: Without HOME or XDG variables the user folder became relative to the current directory.
+Change: On AROS user files (settings, sessions, user data) go to ENVARC:LibreSprite; data files are looked for there first, then in PROGDIR:data.
+Scope: AROS
+Upstream: candidate
+Verification: Built for mainline AROS x86_64 (GCC 10.5, SDK nightly 20261110); LibreSprite starts on nightly 20261113 (pool v1-1, 2026-11-16)
+Removal: None planned.
+---
+diff --git a/src/app/resource_finder.cpp b/src/app/resource_finder.cpp
+index 284392dbe9d787e55aba961e9e3ceb976555bbd2..27175316cdc1faa7afd9191b9596ac46bf91304d 100644
+--- a/src/app/resource_finder.cpp
++++ b/src/app/resource_finder.cpp
+@@ -106,6 +106,13 @@ void ResourceFinder::includeDataDir(const char* filename)
+   snprintf(buf, sizeof(buf), "../share/libresprite/data/%s", filename);
+   includeBinDir(buf);
+   
++#elif defined(__AROS__)
++
++  // ENVARC:LibreSprite/data/filename (user additions), then PROGDIR:data/filename
++  snprintf(buf, sizeof(buf), "data/%s", filename);
++  includeUserDir(buf);
++  includeBinDir(buf);
++
+ #else
+ 
+ 
+@@ -182,6 +189,11 @@ void ResourceFinder::includeUserDir(const char* filename)
+       base::join_path(base::get_lib_app_support_path(), PACKAGE),
+       filename).c_str());
+ 
++#elif defined(__AROS__)
++
++  // ENVARC:LibreSprite/filename: kept across reboots, like other AROS settings
++  addPath(base::join_path("ENVARC:LibreSprite", filename));
++
+ #else
+ 
+   char buf[4096];

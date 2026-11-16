@@ -1,0 +1,61 @@
+Title: Store pthread_t through uintptr_t
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: pthread_t is an unsigned int on AROS, not a pointer: the casts between base::thread's void* handle and pthread_t fail to compile ("loses precision").
+Change: Convert through uintptr_t in both directions.
+Scope: all platforms (no change where pthread_t is a pointer-sized integer or pointer)
+Upstream: candidate
+Verification: Built for mainline AROS x86_64 (GCC 10.5, SDK nightly 20261110); LibreSprite starts on nightly 20261113 (pool v1-1, 2026-11-16)
+Removal: When upstream stores pthread_t without a pointer cast.
+---
+diff --git a/src/base/thread.cpp b/src/base/thread.cpp
+index a8d568d6c2c574b3ea895a329b4f1cd753be8245..f6afd14aad392dc80224697b176268e87457344b 100644
+--- a/src/base/thread.cpp
++++ b/src/base/thread.cpp
+@@ -15,6 +15,7 @@
+   #include <process.h>
+ #else
+   #include <pthread.h>          // Use pthread library in Unix-like systems
++  #include <cstdint>
+ #endif
+ 
+ #if !defined(_WIN32)
+@@ -66,7 +67,7 @@ void base::thread::join()
+ #ifdef _WIN32
+     ::WaitForSingleObject(m_native_handle, INFINITE);
+ #else
+-    ::pthread_join((pthread_t)m_native_handle, NULL);
++    ::pthread_join((pthread_t)(uintptr_t)m_native_handle, NULL);
+ #endif
+     m_native_handle = (native_handle_type)0;
+   }
+@@ -79,7 +80,7 @@ void base::thread::detach()
+     ::CloseHandle(m_native_handle);
+     m_native_handle = (native_handle_type)0;
+ #else
+-    ::pthread_detach((pthread_t)m_native_handle);
++    ::pthread_detach((pthread_t)(uintptr_t)m_native_handle);
+ #endif
+   }
+ }
+@@ -104,7 +105,7 @@ void base::thread::launch_thread(func_wrapper* f)
+ 
+   pthread_t thread;
+   if (::pthread_create(&thread, NULL, pthread_thread_proxy, f) == 0)
+-    m_native_handle = (void*)thread;
++    m_native_handle = (void*)(uintptr_t)thread;
+ 
+ #endif
+ }
+@@ -161,7 +162,7 @@ base::thread::native_handle_type base::this_thread::native_handle()
+ 
+ #else
+ 
+-  return (void*)pthread_self();
++  return (void*)(uintptr_t)pthread_self();
+ 
+ #endif
+ }

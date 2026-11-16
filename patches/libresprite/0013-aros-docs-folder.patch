@@ -1,0 +1,32 @@
+Title: Start in SYS: when HOME is not set on AROS
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: Without HOME the documents folder was "/", which on AROS is not a usable starting drawer.
+Change: Use SYS: on AROS when HOME is unset.
+Scope: AROS
+Upstream: local-only
+Verification: Built for mainline AROS x86_64 (GCC 10.5, SDK nightly 20261110); LibreSprite starts on nightly 20261113 (pool v1-1, 2026-11-16)
+Removal: When the file selector work picks a better default.
+---
+diff --git a/src/base/fs_unix.h b/src/base/fs_unix.h
+index a313f08e7d7cde7945ebd76e77dc748e302942cb..ed3fd00ed1f1c10423680116ad58d704c32eceb5 100644
+--- a/src/base/fs_unix.h
++++ b/src/base/fs_unix.h
+@@ -194,9 +194,14 @@ std::string get_user_docs_folder()
+   char* tmpdir = getenv("HOME");
+   if (tmpdir)
+     return tmpdir;
++#if defined(__AROS__)
++  // No HOME by default on AROS; the system volume always exists.
++  return "SYS:";
++#else
+   else
+     return "/";
+ #endif
++#endif
+ }
+ 
+ std::string get_canonical_path(const std::string& path)

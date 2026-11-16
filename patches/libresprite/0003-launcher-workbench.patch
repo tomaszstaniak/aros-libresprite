@@ -1,0 +1,135 @@
+Title: Open URLs, files and drawers through OpenURL and Workbench on AROS
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: The launcher uses posix_spawn and xdg-open, which AROS does not have.
+Change: URLs go to openurl.library (URL_OpenA), files and drawers to workbench.library OpenWorkbenchObjectA; child processes are reported as unsupported, as on Android and the web.
+Scope: AROS
+Upstream: candidate
+Verification: Built for mainline AROS x86_64 (GCC 10.5, SDK nightly 20261110); LibreSprite starts on nightly 20261113 (pool v1-1, 2026-11-16)
+Removal: None planned.
+---
+diff --git a/src/base/launcher.cpp b/src/base/launcher.cpp
+index 8d260ded9ee2552b33476addb48371758ad6b242..511e8ebfb6f71e6fe29eff2ce0f4563bc5f22bae 100644
+--- a/src/base/launcher.cpp
++++ b/src/base/launcher.cpp
+@@ -25,7 +25,7 @@
+ #include <emscripten/emscripten.h>
+ #endif
+ 
+-#if !defined(_WIN32) && !defined(__EMSCRIPTEN__) && !defined(ANDROID)
++#if !defined(_WIN32) && !defined(__EMSCRIPTEN__) && !defined(ANDROID) && !defined(__AROS__)
+ #include <signal.h>
+ #include <spawn.h>
+ #include <sys/wait.h>
+@@ -197,7 +197,7 @@ std::optional<int> tryReapPosix(int pid, void*)
+ } // namespace
+ #endif
+ 
+-#if defined(ANDROID) || defined(__EMSCRIPTEN__)
++#if defined(ANDROID) || defined(__EMSCRIPTEN__) || defined(__AROS__)
+ 
+ namespace
+ {
+@@ -382,6 +382,48 @@ std::optional<int> tryReapWin(int, void* processHandle)
+ } // namespace
+ #endif  // _WIN32
+ 
++#ifdef __AROS__
++#include <libraries/openurl.h>
++#include <proto/exec.h>
++#include <proto/openurl.h>
++#include <proto/workbench.h>
++
++namespace
++{
++
++// URLs go to the browser chosen in the OpenURL preferences.
++bool aros_open_url(const std::string& url)
++{
++  struct Library* OpenURLBase = OpenLibrary("openurl.library", 1);
++  if (!OpenURLBase)
++    return false;
++  struct TagItem tags[] = { { TAG_DONE, 0 } };
++  ULONG ok = URL_OpenA((STRPTR)url.c_str(), tags);
++  CloseLibrary(OpenURLBase);
++  return ok != 0;
++}
++
++// Files open with their default tool and drawers in a Workbench window,
++// as a double-click on their icons would.
++bool aros_open_object(const std::string& name)
++{
++  struct Library* WorkbenchBase = OpenLibrary("workbench.library", 44);
++  if (!WorkbenchBase)
++    return false;
++  BOOL ok = OpenWorkbenchObjectA((STRPTR)name.c_str(), NULL);
++  CloseLibrary(WorkbenchBase);
++  return ok != FALSE;
++}
++
++bool is_url(const std::string& s)
++{
++  auto colon = s.find("://");
++  return (colon != std::string::npos && colon > 1) || s.rfind("mailto:", 0) == 0;
++}
++
++} // namespace
++#endif
++
+ namespace base {
+ namespace launcher {
+ 
+@@ -413,6 +455,10 @@ bool open_file(const std::string& file)
+ 
+   ret = spawn_and_wait({"open", file});
+ 
++#elif defined(__AROS__)
++
++  ret = (is_url(file) ? aros_open_url(file) : aros_open_object(file)) ? 0 : -1;
++
+ #elif ANDROID
+ 
+   // No-op
+@@ -454,6 +500,12 @@ bool open_folder(const std::string& _file)
+   }
+   return (ret == 0);
+ 
++#elif defined(__AROS__)
++
++  if (!base::is_directory(file))
++    file = base::get_file_path(file);
++  return aros_open_object(file);
++
+ #elif defined(ANDROID) || defined(__EMSCRIPTEN__)
+ 
+   // No-op
+@@ -484,7 +536,7 @@ ProcessInfo spawn_process(const std::string& path, const std::vector<std::string
+   }
+ #if defined(_WIN32)
+   return spawnWin(exe, args, cwd, captureOutput);
+-#elif defined(ANDROID) || defined(__EMSCRIPTEN__)
++#elif defined(ANDROID) || defined(__EMSCRIPTEN__) || defined(__AROS__)
+   return spawnStub(exe, args, cwd, captureOutput);
+ #else
+   return spawnPosix(exe, args, cwd, captureOutput);
+@@ -495,7 +547,7 @@ bool terminate_process(int pid)
+ {
+ #if defined(_WIN32)
+   return terminateWin(pid);
+-#elif defined(ANDROID) || defined(__EMSCRIPTEN__)
++#elif defined(ANDROID) || defined(__EMSCRIPTEN__) || defined(__AROS__)
+   return terminateStub(pid);
+ #else
+   return terminatePosix(pid);
+@@ -506,7 +558,7 @@ std::optional<int> try_reap(int pid, void* processHandle)
+ {
+ #if defined(_WIN32)
+   return tryReapWin(pid, processHandle);
+-#elif defined(ANDROID) || defined(__EMSCRIPTEN__)
++#elif defined(ANDROID) || defined(__EMSCRIPTEN__) || defined(__AROS__)
+   return tryReapStub(pid, processHandle);
+ #else
+   return tryReapPosix(pid, processHandle);

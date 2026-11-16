@@ -1,0 +1,100 @@
+Title: List mounted volumes as the root of the file tree on AROS
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: With volume-aware paths a volume ("RAM:") is its own parent, so building the file tree recursed until the stack ran out.
+Change: On AROS the root file item is the list of mounted volumes (LockDosList LDF_VOLUMES); a volume's parent is that root.
+Scope: AROS
+Upstream: candidate
+Verification: Built for mainline AROS x86_64 (GCC 10.5, SDK nightly 20261110); LibreSprite starts on nightly 20261113 (pool v1-1, 2026-11-16)
+Removal: None planned.
+---
+diff --git a/src/app/file_system.cpp b/src/app/file_system.cpp
+index c79c4afdef76906419d41e803829a3ae22eb48ae..bc472cd3d08756dcc151f8433e26c67b29c7e97f 100644
+--- a/src/app/file_system.cpp
++++ b/src/app/file_system.cpp
+@@ -28,6 +28,7 @@
+ #include <cstdio>
+ #include <map>
+ #include <utility>
++#include <vector>
+ 
+ #ifdef _WIN32
+   #include <windows.h>
+@@ -40,6 +41,12 @@
+   #include <dirent.h>
+ #endif
+ 
++#ifdef __AROS__
++  #include <dos/dosextens.h>
++  #include <proto/dos.h>
++  #include <proto/exec.h>
++#endif
++
+ //////////////////////////////////////////////////////////////////////
+ 
+ #ifndef MAX_PATH
+@@ -241,6 +248,14 @@ IFileItem* FileSystemModule::getRootFileItem()
+ 
+     update_by_pidl(fileitem, attrib);
+   }
++#elif defined(__AROS__)
++  {
++    // AROS has no single root directory: the root item lists the mounted
++    // volumes ("Work:", "RAM:"), like the system's file requesters.
++    fileitem->m_filename = "";
++    fileitem->m_displayname = "Volumes";
++    fileitem->m_is_folder = true;
++  }
+ #else
+   {
+     const char* root = "/";
+@@ -444,6 +459,25 @@ const FileItemList& FileItem::children()
+       }
+     }
+ #else
++#ifdef __AROS__
++    if (this == rootitem) {
++      // One child per mounted volume, named "Name:".
++      std::vector<std::string> volumes;
++      struct DosList* dl = LockDosList(LDF_VOLUMES | LDF_READ);
++      while ((dl = NextDosEntry(dl, LDF_VOLUMES)) != NULL) {
++        const char* name = (const char*)AROS_BSTR_ADDR(dl->dol_Name);
++        volumes.push_back(std::string(name, AROS_BSTR_strlen(dl->dol_Name)) + ":");
++      }
++      UnLockDosList(LDF_VOLUMES | LDF_READ);
++
++      for (const std::string& volume : volumes) {
++        FileItem* child = get_fileitem_by_path(volume, true);
++        if (child)
++          insertChildSorted(child);
++      }
++    }
++    else
++#endif
+     {
+       DIR* dir = opendir(m_filename.c_str());
+       if (dir) {
+@@ -937,8 +971,18 @@ static FileItem* get_fileitem_by_path(const std::string& path, bool create_if_no
+ 
+   // get the parent
+   {
+-    std::string parent_path = remove_backslash_if_needed(base::join_path(base::get_file_path(path), ""));
+-    fileitem->m_parent = get_fileitem_by_path(parent_path, true);
++#ifdef __AROS__
++    // A volume ("Work:") is its own path; its parent is the volume list.
++    if (base::get_file_path(path) == path) {
++      fileitem->m_parent = rootitem;
++      fileitem->m_displayname = path;
++    }
++    else
++#endif
++    {
++      std::string parent_path = remove_backslash_if_needed(base::join_path(base::get_file_path(path), ""));
++      fileitem->m_parent = get_fileitem_by_path(parent_path, true);
++    }
+   }
+ 
+   put_fileitem(fileitem);

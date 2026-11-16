@@ -1,0 +1,89 @@
+Title: Allow a host-built gen utility when cross-compiling
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: gen, the code generator for widgets, preferences and the skin, is built with the target compiler and cannot run on the build machine when cross-compiling.
+Change: New cache variable GEN_EXECUTABLE: a host-built gen (configure a host build with GEN_ONLY=ON) used instead of the target one.
+Scope: all platforms (no change unless GEN_EXECUTABLE is set)
+Upstream: candidate
+Verification: Built for mainline AROS x86_64 (GCC 10.5, SDK nightly 20261110); LibreSprite starts on nightly 20261113 (pool v1-1, 2026-11-16)
+Removal: When upstream supports cross-compiling gen.
+---
+diff --git a/src/app/CMakeLists.txt b/src/app/CMakeLists.txt
+index 99aad6bd7339fc864c9346b95d068f1845b776c5..14e23c6b954ccefd7364025460ed5dfbcfc17670 100644
+--- a/src/app/CMakeLists.txt
++++ b/src/app/CMakeLists.txt
+@@ -1,6 +1,17 @@
+ # Aseprite     | Copyright (C) 2001-2016  David Capello
+ # LibreSprite  | Copyright (C) 2021-2026  LibreSprite contributors
+ 
++# The "gen" utility runs on the build machine. When cross-compiling, build it
++# for the host first (GEN_ONLY) and pass it here as GEN_EXECUTABLE.
++set(GEN_EXECUTABLE "" CACHE FILEPATH "Host-built gen utility (cross-compiling)")
++if(GEN_EXECUTABLE)
++  set(gen_command ${GEN_EXECUTABLE})
++  set(gen_target)
++else()
++  set(gen_command ${CMAKE_BINARY_DIR}/bin/gen)
++  set(gen_target gen)
++endif()
++
+ # Generate a ui::Widget for each widget in a XML file
+ file(GLOB widget_files ${CMAKE_SOURCE_DIR}/data/widgets/*.xml)
+ foreach(widget_file ${widget_files})
+@@ -9,11 +20,11 @@ foreach(widget_file ${widget_files})
+ 
+   add_custom_command(
+     OUTPUT ${output_fn}
+-    COMMAND ${CMAKE_BINARY_DIR}/bin/gen --input ${widget_file} --widgetid ${widget_name} > ${output_fn}.tmp
++    COMMAND ${gen_command} --input ${widget_file} --widgetid ${widget_name} > ${output_fn}.tmp
+     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${output_fn}.tmp ${output_fn}
+     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+     MAIN_DEPENDENCY ${widget_file}
+-    DEPENDS gen)
++    DEPENDS ${gen_target})
+ 
+   list(APPEND generated_files ${output_fn})
+ endforeach()
+@@ -24,21 +35,21 @@ set(pref_xml ${CMAKE_SOURCE_DIR}/data/pref.xml)
+ set(output_fn ${CMAKE_CURRENT_BINARY_DIR}/pref.xml.h)
+ add_custom_command(
+   OUTPUT ${output_fn}
+-  COMMAND ${CMAKE_BINARY_DIR}/bin/gen --input ${pref_xml} --pref-h > ${output_fn}.tmp
++  COMMAND ${gen_command} --input ${pref_xml} --pref-h > ${output_fn}.tmp
+   COMMAND ${CMAKE_COMMAND} -E copy_if_different ${output_fn}.tmp ${output_fn}
+   WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+   MAIN_DEPENDENCY ${pref_xml}
+-  DEPENDS gen)
++  DEPENDS ${gen_target})
+ list(APPEND generated_files ${output_fn})
+ 
+ set(output_fn ${CMAKE_CURRENT_BINARY_DIR}/pref.xml.cpp)
+ add_custom_command(
+   OUTPUT ${output_fn}
+-  COMMAND ${CMAKE_BINARY_DIR}/bin/gen --input ${pref_xml} --pref-cpp > ${output_fn}.tmp
++  COMMAND ${gen_command} --input ${pref_xml} --pref-cpp > ${output_fn}.tmp
+   COMMAND ${CMAKE_COMMAND} -E copy_if_different ${output_fn}.tmp ${output_fn}
+   WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+   MAIN_DEPENDENCY ${pref_xml}
+-  DEPENDS gen)
++  DEPENDS ${gen_target})
+ list(APPEND generated_files ${output_fn})
+ 
+ # Generate generated_skin.h from data/skins/default/skin.xml
+@@ -46,11 +57,11 @@ set(skin_xml ${CMAKE_SOURCE_DIR}/data/skins/default/skin.xml)
+ set(output_fn ${CMAKE_CURRENT_BINARY_DIR}/skin.xml.h)
+ add_custom_command(
+   OUTPUT ${output_fn}
+-  COMMAND ${CMAKE_BINARY_DIR}/bin/gen --input ${skin_xml} --skin > ${output_fn}.tmp
++  COMMAND ${gen_command} --input ${skin_xml} --skin > ${output_fn}.tmp
+   COMMAND ${CMAKE_COMMAND} -E copy_if_different ${output_fn}.tmp ${output_fn}
+   WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+   MAIN_DEPENDENCY ${skin_xml}
+-  DEPENDS gen)
++  DEPENDS ${gen_target})
+ list(APPEND generated_files ${output_fn})
+ 
+ # Directory where generated files by "gen" utility will stay.

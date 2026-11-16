@@ -1,0 +1,44 @@
+Title: Lock the object table mutex instead of only unlocking it
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: doc::Object::id(), Object::setId() and doc::get_object() guard the global object table with base::scoped_unlock, which only unlocks the mutex when it goes out of scope. The mutex is never locked, so the table is unprotected against other threads, and every call unlocks a mutex nobody holds (undefined behaviour). Linux ignores it; AROS raises "Semaphore in an illegal state" (seen on the first stroke on the canvas, from ExpandCelCanvas::commit via PatchCel/WithCel).
+Change: Use base::scoped_lock, which locks in its constructor and unlocks in its destructor.
+Scope: all platforms
+Upstream: candidate
+Verification: found with a diagnostic build that reports unlocks of mutexes the caller does not hold (tests/aros/unlock-check.c), mainline x86_64, pool v1-1, 2026-11-16
+Removal: when upstream uses scoped_lock there.
+---
+diff --git a/src/doc/object.cpp b/src/doc/object.cpp
+index cd3909e22856d380125f8e45861df5f8366094e9..846658cab39514de62324c62e44eb8fc712c4442 100644
+--- a/src/doc/object.cpp
++++ b/src/doc/object.cpp
+@@ -53,7 +53,7 @@ const ObjectId Object::id() const
+   // The first time the ID is request, we store the object in the
+   // "objects" hash table.
+   if (!m_id) {
+-    base::scoped_unlock hold(mutex);
++    base::scoped_lock hold(mutex);
+     m_id = ++newId;
+     objects.insert(std::make_pair(m_id, const_cast<Object*>(this)));
+   }
+@@ -62,7 +62,7 @@ const ObjectId Object::id() const
+ 
+ void Object::setId(ObjectId id)
+ {
+-  base::scoped_unlock hold(mutex);
++  base::scoped_lock hold(mutex);
+ 
+   if (m_id) {
+     auto it = objects.find(m_id);
+@@ -87,7 +87,7 @@ void Object::setVersion(ObjectVersion version)
+ 
+ Object* get_object(ObjectId id)
+ {
+-  base::scoped_unlock hold(mutex);
++  base::scoped_lock hold(mutex);
+   auto it = objects.find(id);
+   if (it != objects.end())
+     return it->second;

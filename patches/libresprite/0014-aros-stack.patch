@@ -1,0 +1,30 @@
+Title: Ask AROS for an 8 MiB main stack
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: The main task overflowed its stack while building the UI (Software Failure 0x8100000E, Shell default stack).
+Change: Define __stack = 8 MiB; AROS start-up code gives the main task at least that much.
+Scope: AROS
+Upstream: candidate
+Verification: Built for mainline AROS x86_64 (GCC 10.5, SDK nightly 20261110); LibreSprite starts on nightly 20261113 (pool v1-1, 2026-11-16)
+Removal: None planned.
+---
+diff --git a/src/main/main.cpp b/src/main/main.cpp
+index af7eaec20369c80e1024a33495ce001c38f05e31..80e28064578f2ec26c141913888a859bddba6dc1 100644
+--- a/src/main/main.cpp
++++ b/src/main/main.cpp
+@@ -30,6 +30,12 @@
+ #ifdef _WIN32
+ #include <windows.h>
+ #endif
++
++#ifdef __AROS__
++// AROS startup code reads __stack and gives the main task at least this much
++// stack; a Shell's default (often 256 KiB) is far too small for the UI.
++extern "C" { unsigned long __stack = 8 * 1024 * 1024; }
++#endif
+ #ifdef EMSCRIPTEN
+ #define LIFETIME static
+ #else

@@ -1,0 +1,27 @@
+Title: Do not build a string from a null HOME when listing font folders
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: get_font_paths built a std::string from getenv("HOME"); with HOME unset that throws ("basic_string::_M_construct null not valid").
+Change: Treat an unset HOME like an empty one.
+Scope: all non-Apple, non-Android platforms
+Upstream: candidate
+Verification: Built for mainline AROS x86_64 (GCC 10.5, SDK nightly 20261110); LibreSprite starts on nightly 20261113 (pool v1-1, 2026-11-16)
+Removal: When upstream handles an unset HOME.
+---
+diff --git a/src/base/fs_unix.h b/src/base/fs_unix.h
+index 61b423a4ee0dfd547128f3ab8e38e51cff08d792..a7e442c262f3cfdda1c3647d9047c64afb77fe98 100644
+--- a/src/base/fs_unix.h
++++ b/src/base/fs_unix.h
+@@ -239,7 +239,8 @@ std::vector<std::string> get_font_paths()
+ 
+ std::vector<std::string> get_font_paths()
+ {
+-    std::string home = getenv("HOME");
++    const char* homeEnv = getenv("HOME");
++    std::string home = homeEnv ? homeEnv : "";
+     if (home.empty())
+         home = "~";
+     return {

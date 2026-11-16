@@ -1,0 +1,203 @@
+Title: AROS: Workbench start and the GUI_RENDERER ToolType
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: Started from Workbench (argc 0, argv = WBStartup) LibreSprite would read the WBStartup message as argv, could not open the files of project icons, and its console output opened a CON: window; there was no way to choose the renderer per installation as in other AROS programs.
+Change: main.cpp: on Workbench start build argv from the WBStartup icons (paths in UTF-8) and send stdout/stderr to NIL:. app/aros_gui_renderer.cpp: the GUI_RENDERER ToolType of the program icon: CPU without OpenGL, GPU with OpenGL, AUTO (default) OpenGL when gl.library 20 opens and the GPU acceleration preference is on; the choice is logged.
+Scope: AROS
+Upstream: local-only
+Verification: mainline x86_64, pool v1-1, 2026-11-16: --verbose log "GUI_RENDERER=AUTO, gl.library present: OpenGL" with the AUTO icon and "GUI_RENDERER=CPU ... CPU" with a CPU icon; double-click on a project icon (default tool LibreSprite) opened that PNG, no CON: window; after quitting, Status lists no LibreSprite process. Also: after an OpenGL run, the redirected log could be deleted and later Shell redirection worked (no files left in use).
+Removal: AROS-specific.
+---
+diff --git a/src/app/CMakeLists.txt b/src/app/CMakeLists.txt
+index f1d9174eb1d05bbd44a8480fd368d10d7e4ae68d..4df21dfc63406e45e653db6ceb4ae23c8169405e 100644
+--- a/src/app/CMakeLists.txt
++++ b/src/app/CMakeLists.txt
+@@ -461,6 +461,7 @@ add_library(app-lib
+   ui/input_chain.cpp
+   ui/keyboard_shortcuts.cpp
+   ui/aros_menu_strip.cpp
++  aros_gui_renderer.cpp
+   ui/main_menu_bar.cpp
+   ui/main_window.cpp
+   ui/notifications.cpp
+diff --git a/src/app/aros_gui_renderer.cpp b/src/app/aros_gui_renderer.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..39e4e422e2a3a076c6cd6e554658ec676f9546a8
+--- /dev/null
++++ b/src/app/aros_gui_renderer.cpp
+@@ -0,0 +1,60 @@
++// LibreSprite | Copyright (C) 2026  LibreSprite contributors
++//
++// This program is free software; you can redistribute it and/or modify
++// it under the terms of the GNU General Public License version 2 as
++// published by the Free Software Foundation.
++
++#ifdef __AROS__
++
++#ifdef HAVE_CONFIG_H
++#include "config.h"
++#endif
++
++#include "app/aros_gui_renderer.h"
++
++#include "base/fs.h"
++#include "base/log.h"
++#include "base/system_path.h"
++
++#include <proto/exec.h>
++#include <proto/icon.h>
++#include <workbench/workbench.h>
++
++#include <cctype>
++#include <string>
++
++namespace app {
++
++bool aros_gui_renderer(bool preference)
++{
++  std::string mode = "AUTO";
++  std::string program = base::to_system_path(base::get_app_path());
++  if (struct DiskObject* icon = GetDiskObject((CONST_STRPTR)program.c_str())) {
++    if (STRPTR value = (STRPTR)FindToolType(icon->do_ToolTypes, (STRPTR)"GUI_RENDERER"))
++      mode = value;
++    FreeDiskObject(icon);
++  }
++  for (char& c : mode)
++    c = char(std::toupper((unsigned char)c));
++
++  bool gl = false;
++  if (struct Library* glBase = OpenLibrary((CONST_STRPTR)"gl.library", 20)) {
++    gl = true;
++    CloseLibrary(glBase);
++  }
++
++  bool gpu;
++  if (mode == "CPU")
++    gpu = false;
++  else if (mode == "GPU")
++    gpu = true;
++  else
++    gpu = preference && gl;
++  LOG("GUI_RENDERER=%s, gl.library %s: %s\n", mode.c_str(),
++      gl ? "present" : "missing", gpu ? "OpenGL" : "CPU");
++  return gpu;
++}
++
++} // namespace app
++
++#endif // __AROS__
+diff --git a/src/app/aros_gui_renderer.h b/src/app/aros_gui_renderer.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..2d5a5f5124242b9896165f59a2e847f65fee5375
+--- /dev/null
++++ b/src/app/aros_gui_renderer.h
+@@ -0,0 +1,17 @@
++// LibreSprite | Copyright (C) 2026  LibreSprite contributors
++//
++// This program is free software; you can redistribute it and/or modify
++// it under the terms of the GNU General Public License version 2 as
++// published by the Free Software Foundation.
++
++#pragma once
++
++namespace app {
++
++  // AROS: the GUI_RENDERER ToolType of the program's icon. CPU draws
++  // without OpenGL, GPU uses OpenGL, AUTO (the default) uses OpenGL when
++  // gl.library is installed and preference (the "GPU acceleration"
++  // option) is on. Returns whether to use OpenGL.
++  bool aros_gui_renderer(bool preference);
++
++} // namespace app
+diff --git a/src/app/modules/gui.cpp b/src/app/modules/gui.cpp
+index 863d7f301ee4424e75ba8641d52ba168aabe45f3..9993fbe7de89993a05b1f7c5d79b5bb78805cb80 100644
+--- a/src/app/modules/gui.cpp
++++ b/src/app/modules/gui.cpp
+@@ -19,6 +19,9 @@
+ #include "app/modules/editors.h"
+ #include "app/modules/gfx.h"
+ #include "app/modules/gui.h"
++#ifdef __AROS__
++#include "app/aros_gui_renderer.h"
++#endif
+ #include "app/modules/i18n.h"
+ #include "app/modules/palettes.h"
+ #include "app/pref/preferences.h"
+@@ -168,6 +171,10 @@ int init_module_gui()
+   bool gpuAccel = Preferences::instance().general.gpuAcceleration();
+   if (!gui_mode)
+     gpuAccel = false;
++#ifdef __AROS__
++  else
++    gpuAccel = aros_gui_renderer(gpuAccel);
++#endif
+ 
+   if (!create_main_display(gpuAccel, maximized, lastError)) {
+     // If we've created the display with hardware acceleration,
+diff --git a/src/main/main.cpp b/src/main/main.cpp
+index 80e28064578f2ec26c141913888a859bddba6dc1..29991147bc544552e4856f8a8d9b689ae56aa0a3 100644
+--- a/src/main/main.cpp
++++ b/src/main/main.cpp
+@@ -35,6 +35,49 @@
+ // AROS startup code reads __stack and gives the main task at least this much
+ // stack; a Shell's default (often 256 KiB) is far too small for the UI.
+ extern "C" { unsigned long __stack = 8 * 1024 * 1024; }
++
++#include "base/system_path.h"
++
++#include <aros/startup.h>
++#include <proto/dos.h>
++#include <workbench/startup.h>
++
++#include <cstdio>
++#include <string>
++#include <vector>
++
++namespace {
++
++  // Started from Workbench, argc is 0 and argv is the WBStartup message:
++  // give the program a normal argument list with the paths of the icons
++  // it was started with (project icons whose default tool it is, or icons
++  // selected together with it).
++  void aros_workbench_arguments(int& argc, char**& argv)
++  {
++    static std::vector<std::string> args;
++    static std::vector<char*> ptrs;
++    if (argc != 0)
++      return;
++    // No Shell: console output would open a CON: window.
++    std::freopen("NIL:", "w", stdout);
++    std::freopen("NIL:", "w", stderr);
++    args.push_back("LibreSprite");
++    struct WBStartup* wb = WBenchMsg;
++    for (LONG i = 1; wb && i < wb->sm_NumArgs; ++i) {
++      const struct WBArg& arg = wb->sm_ArgList[i];
++      char path[1024];
++      if (arg.wa_Lock && NameFromLock(arg.wa_Lock, path, sizeof(path)) &&
++          AddPart(path, (CONST_STRPTR)arg.wa_Name, sizeof(path)))
++        args.push_back(base::from_system_path(path));
++    }
++    for (std::string& s : args)
++      ptrs.push_back(&s[0]);
++    ptrs.push_back(nullptr);
++    argc = int(args.size());
++    argv = ptrs.data();
++  }
++
++} // anonymous namespace
+ #endif
+ #ifdef EMSCRIPTEN
+ #define LIFETIME static
+@@ -60,6 +103,9 @@ namespace {
+ // Aseprite entry point. (Called from she library.)
+ int app_main(int argc, char* argv[])
+ {
++#ifdef __AROS__
++  aros_workbench_arguments(argc, argv);
++#endif
+   // Initialize the locale. Aseprite isn't ready to handle numeric
+   // fields with other locales (e.g. we expect strings like "10.32" be
+   // used in std::strtod(), not something like "10,32").

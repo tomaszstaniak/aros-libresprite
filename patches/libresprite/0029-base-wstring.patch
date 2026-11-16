@@ -1,0 +1,300 @@
+Title: Use base::wstring instead of std::wstring
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: The ABIv11 libstdc++ is built without wchar_t support and has no std::wstring alias; base, she and ui use std::wstring and do not compile. base/thread.cpp yield() fell back to select(), which the ABIv11 SDK does not declare. base/string.cpp compared wchar_t with int (-Wsign-compare where wchar_t is unsigned).
+Change: base/string.h: typedef std::basic_string<wchar_t> base::wstring, used instead of std::wstring everywhere outside Windows-only files. this_thread::yield() calls sched_yield() on AROS. insert_utf8_char compares as unsigned long.
+Scope: all platforms (no behaviour change)
+Upstream: candidate
+Verification: ABIv11 (AROS One, pool v11-3, 2026-11-16): builds with no warnings with GCC 10.5 and SDK-202609; started from a Shell with a 262144-byte stack, new sprite, drawing, PNG save with Enter, Intuition menu, AROS Capture picture pasted, LibreSprite picture shown by MultiView CLIPBOARD, clean exit (no task or pthread left). Mainline x86_64 rebuilt with no warnings.
+Removal: when upstream adopts it.
+---
+diff --git a/src/base/launcher.cpp b/src/base/launcher.cpp
+index 511e8ebfb6f71e6fe29eff2ce0f4563bc5f22bae..b1f11530a8c0ad9724fb77740c93cf609f7c4be7 100644
+--- a/src/base/launcher.cpp
++++ b/src/base/launcher.cpp
+@@ -273,11 +273,11 @@ namespace
+ 
+ // Quotes an argument for a CreateProcessW command line (MSVC quoting rules:
+ // backslashes before a quote are doubled, the quote is escaped).
+-std::wstring quoteArg(const std::wstring& arg)
++base::wstring quoteArg(const base::wstring& arg)
+ {
+-  if (!arg.empty() && arg.find_first_of(L" \t\n\"") == std::wstring::npos)
++  if (!arg.empty() && arg.find_first_of(L" \t\n\"") == base::wstring::npos)
+     return arg;
+-  std::wstring out = L"\"";
++  base::wstring out = L"\"";
+   for (size_t i = 0; i < arg.size(); ) {
+     size_t backslashes = 0;
+     while (i < arg.size() && arg[i] == L'\\') {
+@@ -319,8 +319,8 @@ base::launcher::ProcessInfo spawnWin(const std::string& path,
+     }
+   }
+ 
+-  std::wstring wpath = base::from_utf8(path);
+-  std::wstring cmdLine = quoteArg(wpath);
++  base::wstring wpath = base::from_utf8(path);
++  base::wstring cmdLine = quoteArg(wpath);
+   for (auto& arg : args)
+     cmdLine += L" " + quoteArg(base::from_utf8(arg));
+ 
+@@ -335,7 +335,7 @@ base::launcher::ProcessInfo spawnWin(const std::string& path,
+ 
+   PROCESS_INFORMATION pi;
+   ZeroMemory(&pi, sizeof(pi));
+-  std::wstring wcwd = base::from_utf8(cwd);
++  base::wstring wcwd = base::from_utf8(cwd);
+   if (!CreateProcessW(wpath.c_str(), cmdLine.data(), NULL, NULL, captureOutput,
+                       CREATE_NO_WINDOW, NULL, wcwd.empty() ? NULL : wcwd.c_str(),
+                       &si, &pi)) {
+diff --git a/src/base/string.cpp b/src/base/string.cpp
+index 8256336188015c31b5e70434a89964583594a636..ee20f1a67297e7751049a8f792bd0616af8ba89c 100644
+--- a/src/base/string.cpp
++++ b/src/base/string.cpp
+@@ -36,7 +36,7 @@ std::vector<std::string> split(const std::string& original, char delimiter)
+ 
+ std::string string_to_lower(const std::string& original)
+ {
+-  std::wstring result(from_utf8(original));
++  base::wstring result(from_utf8(original));
+   auto it(result.begin());
+   auto end(result.end());
+   while (it != end) {
+@@ -48,7 +48,7 @@ std::string string_to_lower(const std::string& original)
+ 
+ std::string string_to_upper(const std::string& original)
+ {
+-  std::wstring result(from_utf8(original));
++  base::wstring result(from_utf8(original));
+   auto it(result.begin());
+   auto end(result.end());
+   while (it != end) {
+@@ -60,7 +60,7 @@ std::string string_to_upper(const std::string& original)
+ 
+ #ifdef _WIN32
+ 
+-std::string to_utf8(const std::wstring& src)
++std::string to_utf8(const base::wstring& src)
+ {
+   int required_size =
+     ::WideCharToMultiByte(CP_UTF8, 0,
+@@ -80,7 +80,7 @@ std::string to_utf8(const std::wstring& src)
+   return std::string(&buf[0]);
+ }
+ 
+-std::wstring from_utf8(const std::string& src)
++base::wstring from_utf8(const std::string& src)
+ {
+   int required_size =
+     MultiByteToWideChar(CP_UTF8, 0,
+@@ -88,7 +88,7 @@ std::wstring from_utf8(const std::string& src)
+       NULL, 0);
+ 
+   if (required_size == 0)
+-    return std::wstring();
++    return base::wstring();
+ 
+   std::vector<wchar_t> buf(++required_size);
+ 
+@@ -96,7 +96,7 @@ std::wstring from_utf8(const std::string& src)
+     src.c_str(), (int)src.size(),
+     &buf[0], required_size);
+ 
+-  return std::wstring(&buf[0]);
++  return base::wstring(&buf[0]);
+ }
+ 
+ #else
+@@ -113,7 +113,7 @@ static std::size_t insert_utf8_char(std::string* result, wchar_t chr)
+   }
+ 
+   bits = 7;
+-  while (chr >= (1<<bits))
++  while (static_cast<unsigned long>(chr) >= (1ul<<bits))
+     bits++;
+ 
+   size = 2;
+@@ -141,10 +141,10 @@ static std::size_t insert_utf8_char(std::string* result, wchar_t chr)
+   return size;
+ }
+ 
+-std::string to_utf8(const std::wstring& src)
++std::string to_utf8(const base::wstring& src)
+ {
+-  std::wstring::const_iterator it, begin = src.begin();
+-  std::wstring::const_iterator end = src.end();
++  base::wstring::const_iterator it, begin = src.begin();
++  base::wstring::const_iterator end = src.end();
+ 
+   // Get required size to reserve a string so string::push_back()
+   // doesn't need to reallocate its data.
+@@ -161,7 +161,7 @@ std::string to_utf8(const std::wstring& src)
+   return result;
+ }
+ 
+-std::wstring from_utf8(const std::string& src)
++base::wstring from_utf8(const std::string& src)
+ {
+   int required_size = utf8_length(src);
+   std::vector<wchar_t> buf(++required_size);
+@@ -179,7 +179,7 @@ std::wstring from_utf8(const std::string& src)
+     ++it;
+   }
+ 
+-  return std::wstring(&buf[0]);
++  return base::wstring(&buf[0]);
+ }
+ 
+ #endif
+diff --git a/src/base/string.h b/src/base/string.h
+index be90a6780270029fd8274b66276f563b9de8a2da..c3ac7216d58b702570ee17e5f6f0741a8f72b8f7 100644
+--- a/src/base/string.h
++++ b/src/base/string.h
+@@ -12,13 +12,17 @@
+ 
+ namespace base {
+ 
++  // Wide strings. Not base::wstring: some C++ libraries (AROS ABIv11
++  // libstdc++) are built without wchar_t support and have no such alias.
++  typedef std::basic_string<wchar_t> wstring;
++
+   std::vector<std::string> split(const std::string& original, char delimiter);
+ 
+   std::string string_to_lower(const std::string& original);
+   std::string string_to_upper(const std::string& original);
+ 
+-  std::string to_utf8(const std::wstring& widestring);
+-  std::wstring from_utf8(const std::string& utf8string);
++  std::string to_utf8(const base::wstring& widestring);
++  base::wstring from_utf8(const std::string& utf8string);
+ 
+   int utf8_length(const std::string& utf8string);
+   int utf8_icmp(const std::string& a, const std::string& b, int n = 0);
+diff --git a/src/base/string_tests.cpp b/src/base/string_tests.cpp
+index 89ebd512822f1afa16baf925a0a3ae1f2c2bbf1b..2bcc96015c918faa3335d682f1f5e245cd2cf102 100644
+--- a/src/base/string_tests.cpp
++++ b/src/base/string_tests.cpp
+@@ -20,7 +20,7 @@ TEST(String, Utf8Conversion)
+   std::string a = "\xE6\xBC\xA2\xE5\xAD\x97"; // 漢字
+   ASSERT_EQ(6, a.size());
+ 
+-  std::wstring b = from_utf8(a);
++  base::wstring b = from_utf8(a);
+   ASSERT_EQ(2, b.size());
+   ASSERT_EQ(0x6f22, b[0]);
+   ASSERT_EQ(0x5b57, b[1]);
+@@ -94,7 +94,7 @@ TEST(String, StringToLowerByUnicodeCharIssue1065)
+   std::setlocale(LC_ALL, "en-US");
+ 
+   std::string  a = "\xC2\xBA";
+-  std::wstring b = from_utf8(a);
++  base::wstring b = from_utf8(a);
+   std::string  c = to_utf8(b);
+ 
+   ASSERT_EQ(a, c);
+diff --git a/src/base/thread.cpp b/src/base/thread.cpp
+index f6afd14aad392dc80224697b176268e87457344b..68af866913819f9038effd2246c9fee23bf36226 100644
+--- a/src/base/thread.cpp
++++ b/src/base/thread.cpp
+@@ -23,6 +23,10 @@
+   #include <sys/time.h>
+ #endif
+ 
++#if defined(__AROS__)
++  #include <sched.h>
++#endif
++
+ namespace {
+ 
+ #ifdef _WIN32
+@@ -127,7 +131,7 @@ void base::this_thread::yield()
+ 
+   ::Sleep(0);
+ 
+-#elif defined(HAVE_SCHED_YIELD) && defined(_POSIX_PRIORITY_SCHEDULING)
++#elif (defined(HAVE_SCHED_YIELD) && defined(_POSIX_PRIORITY_SCHEDULING)) || defined(__AROS__)
+ 
+   sched_yield();
+ 
+diff --git a/src/she/common/freetype_font.cpp b/src/she/common/freetype_font.cpp
+index 8c995c660873fe3cff0c99d4ba7861dc19d57fe9..f290fe372f7db0c49c1b2f68addf0857cc640401 100644
+--- a/src/she/common/freetype_font.cpp
++++ b/src/she/common/freetype_font.cpp
+@@ -42,7 +42,7 @@ int FreeTypeFont::height() const
+ 
+ gfx::Rect FreeTypeFont::charBounds(int chr) const
+ {
+-  std::wstring tmp;
++  base::wstring tmp;
+   tmp.push_back(chr);
+   return m_face.calcTextBounds(base::to_utf8(tmp));
+ }
+diff --git a/src/she/common/generic_surface.h b/src/she/common/generic_surface.h
+index d0b7448bce0c3f00f0c40a976af07526b58b299f..d0fea467aaec2f94cf2b721f6e31f7255ce0887d 100644
+--- a/src/she/common/generic_surface.h
++++ b/src/she/common/generic_surface.h
+@@ -111,7 +111,7 @@ public:
+ 
+       case FontType::kTrueType: {
+         // TODO avoid a temporary string
+-        std::wstring str;
++        base::wstring str;
+         str.push_back(chr);
+         drawString(font, fg, bg, x, y, base::to_utf8(str).c_str());
+         break;
+diff --git a/src/ui/accelerator.cpp b/src/ui/accelerator.cpp
+index 565a0f977e58e35c120b752e5332a6f4e8d10416..84ce410ed68f29f6c6badf8d85d82df69c4ab03d 100644
+--- a/src/ui/accelerator.cpp
++++ b/src/ui/accelerator.cpp
+@@ -105,7 +105,7 @@ Accelerator::Accelerator(const std::string& str)
+ 
+     // Word with one character
+     else if (base::utf8_length(tok) == 1) {
+-      std::wstring wstr = base::from_utf8(tok);
++      base::wstring wstr = base::from_utf8(tok);
+       if (wstr.size() != 1) {
+         ASSERT(false && "Something wrong converting utf-8 to wchar string");
+         continue;
+@@ -365,7 +365,7 @@ std::string Accelerator::toString() const
+ 
+   // Key
+   if (m_unicodeChar) {
+-    std::wstring wideUnicodeChar;
++    base::wstring wideUnicodeChar;
+     wideUnicodeChar.push_back((wchar_t)toupper(m_unicodeChar));
+     buf += base::to_utf8(wideUnicodeChar);
+   }
+diff --git a/src/ui/entry.cpp b/src/ui/entry.cpp
+index ee81c191ec161096bde048898294d6e6a669cc7b..5ac9c74e36bcf64ae9e9181072a243eb287b9d17 100644
+--- a/src/ui/entry.cpp
++++ b/src/ui/entry.cpp
+@@ -540,7 +540,7 @@ int Entry::getCaretFromMouse(MouseMessage* mousemsg)
+ 
+ void Entry::executeCmd(EntryCmd cmd, int unicodeChar, bool shift_pressed)
+ {
+-  std::wstring text = base::from_utf8(this->text());
++  base::wstring text = base::from_utf8(this->text());
+   int c, selbeg, selend;
+ 
+   getEntryThemeInfo(NULL, NULL, NULL, &selbeg, &selend);
+@@ -637,7 +637,7 @@ void Entry::executeCmd(EntryCmd cmd, int unicodeChar, bool shift_pressed)
+       if (selbeg >= 0) {
+         // *cut* text!
+         if (cmd == EntryCmd::Cut) {
+-          std::wstring selected = text.substr(selbeg, selend - selbeg + 1);
++          base::wstring selected = text.substr(selbeg, selend - selbeg + 1);
+           clip::set_text(base::to_utf8(selected));
+         }
+ 
+@@ -682,7 +682,7 @@ void Entry::executeCmd(EntryCmd cmd, int unicodeChar, bool shift_pressed)
+ 
+     case EntryCmd::Copy:
+       if (selbeg >= 0) {
+-        std::wstring selected = text.substr(selbeg, selend - selbeg + 1);
++        base::wstring selected = text.substr(selbeg, selend - selbeg + 1);
+         clip::set_text(base::to_utf8(selected));
+       }
+       break;

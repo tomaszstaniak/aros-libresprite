@@ -1,0 +1,37 @@
+Title: Do not drop queued key presses when text input arrives
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: The SDL3 back end handles SDL_EVENT_TEXT_INPUT by clearing the whole key buffer and keeps polling. When several keys are queued (the program is busy), each text event drops the events of the keys before it: typing "RAM:cross.png" into the file name field left "og".
+Change: Remove only the raw key press that produced the text (the last KeyDown without a character, which SDL sends just before the text); keep earlier text and other keys.
+Scope: all platforms with the SDL3 back end
+Upstream: candidate
+Verification: mainline x86_64, pool v1-1, 2026-11-16 (see the patch series record)
+Removal: when upstream keeps queued keys.
+---
+diff --git a/src/she/sdl3/she.cpp b/src/she/sdl3/she.cpp
+index da234e421b8b0edb5ffdfa30fb7215faf9e9df2e..fbaaaabfcd9a28ce92d11b6545eea8e4a1de7d24 100644
+--- a/src/she/sdl3/she.cpp
++++ b/src/she/sdl3/she.cpp
+@@ -589,7 +589,18 @@ namespace she {
+           continue;
+ 
+         case SDL_EVENT_TEXT_INPUT: {
+-          keybuffer.clear();
++          // The text replaces the raw key press that produced it, which SDL
++          // sends just before. Remove only that one: events of earlier keys
++          // (text already received in this pass, Backspace, arrows) stay,
++          // so typing is not lost when several keys queue up.
++          for (auto rit = keybuffer.rbegin(); rit != keybuffer.rend(); ++rit) {
++            if (rit->type() == Event::KeyDown && rit->unicodeChar() == 0) {
++              keybuffer.erase(std::next(rit).base());
++              break;
++            }
++            if (rit->unicodeChar() != 0)
++              break;
++          }
+           std::string textString = sdlEvent.text.text;
+           base::utf8_const_iterator begin{textString.begin()};
+           base::utf8_const_iterator end{textString.end()};

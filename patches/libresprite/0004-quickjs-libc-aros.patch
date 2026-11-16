@@ -1,0 +1,297 @@
+Title: Build QuickJS's std/os modules (quickjs-libc) on AROS
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: The script engine (third_party/delta/QuickJSInterpreter.cpp) runs promise jobs and timers through quickjs-libc (js_std_loop, js_std_init_handlers, js_module_set_import_meta). quickjs-libc includes poll.h, dlfcn.h, termios.h, sys/wait.h, grp.h and uses poll(), signals and pthread_condattr_setclock, none of which AROS has.
+Change: _GNU_SOURCE also on AROS (setenv/unsetenv are declared only then); Treat AROS like WASI/3DS where those headers and functions are excluded (process, terminal, dynamic loading and signal functions report errors); on AROS the event loop runs timers and sleeps until the next one (no file descriptor handlers), os.Worker is not built, condition variables use CLOCK_REALTIME without a clock attribute; os.platform is "aros"; std.getenviron() returns no variables (AROS has no environ array).
+Scope: AROS
+Upstream: candidate (the quickjs-ng project carries quickjs-libc)
+Verification: mainline x86_64, pool v1-1, 2026-11-16 (see the patch series record)
+Removal: when quickjs-libc supports AROS
+---
+diff --git a/third_party/quickjs-amalgam/quickjs-amalgam.c b/third_party/quickjs-amalgam/quickjs-amalgam.c
+index 2c86a5e32d4fc5698a36e30425a8771ad78fc118..0d2ff659753a5b3c8ada9d975840799f87b00269 100644
+--- a/third_party/quickjs-amalgam/quickjs-amalgam.c
++++ b/third_party/quickjs-amalgam/quickjs-amalgam.c
+@@ -1,4 +1,4 @@
+-#if defined(QJS_BUILD_LIBC) && defined(__linux__) && !defined(_GNU_SOURCE)
++#if defined(QJS_BUILD_LIBC) && (defined(__linux__) || defined(__AROS__)) && !defined(_GNU_SOURCE)
+ #define _GNU_SOURCE
+ #endif
+ /*
+@@ -69019,7 +69019,9 @@ void js_mutex_unlock(js_mutex_t *mutex) {
+ }
+ 
+ void js_cond_init(js_cond_t *cond) {
+-#if defined(__APPLE__) && defined(__MACH__)
++#if (defined(__APPLE__) && defined(__MACH__)) || defined(__AROS__)
++    /* AROS pthreads have no pthread_condattr_setclock: timed waits use
++       CLOCK_REALTIME (see js_cond_timedwait). */
+     if (pthread_cond_init(cond, NULL))
+         abort();
+ #else
+@@ -69107,7 +69109,13 @@ int js_cond_timedwait(js_cond_t *cond, js_mutex_t *mutex, uint64_t timeout) {
+     int r;
+     struct timespec ts;
+ 
+-#if !defined(__APPLE__)
++#if defined(__AROS__)
++    {
++        struct timespec now;
++        clock_gettime(CLOCK_REALTIME, &now);
++        timeout += (uint64_t)now.tv_sec * NANOSEC + (uint64_t)now.tv_nsec;
++    }
++#elif !defined(__APPLE__)
+     timeout += js__hrtime_ns();
+ #endif
+ 
+@@ -75454,8 +75462,10 @@ JS_EXTERN void js_std_set_worker_new_context_func(JSContext *(*func)(JSRuntime *
+ #define chdir _chdir
+ #else
+ #include <sys/ioctl.h>
++#if !defined(__AROS__)
+ #include <poll.h>
+-#if !defined(__wasi__) && !defined(__3DS__)
++#endif
++#if !defined(__wasi__) && !defined(__3DS__) && !defined(__AROS__)
+ #include <dlfcn.h>
+ #include <termios.h>
+ #include <sys/resource.h>
+@@ -75480,7 +75490,7 @@ extern char **environ;
+ 
+ 
+ 
+-#if JS_HAVE_THREADS
++#if JS_HAVE_THREADS && !defined(__AROS__)
+ 
+ #define USE_WORKER // enable os.Worker
+ #endif
+@@ -76068,7 +76078,7 @@ static JSModuleDef *js_module_loader_so(JSContext *ctx,
+     }
+     return m;
+ }
+-#elif defined(__wasi__) || defined(__3DS__)
++#elif defined(__wasi__) || defined(__3DS__) || defined(__AROS__)
+ static JSModuleDef *js_module_loader_so(JSContext *ctx,
+                                         const char *module_name)
+ {
+@@ -76145,7 +76155,7 @@ int js_module_set_import_meta(JSContext *ctx, JSValueConst func_val,
+         return -1;
+     if (!strchr(module_name, ':')) {
+         strcpy(buf, "file://");
+-#if !defined(_WIN32) && !defined(__wasi__) && !defined(__3DS__)
++#if !defined(_WIN32) && !defined(__wasi__) && !defined(__3DS__) && !defined(__AROS__)
+         /* realpath() cannot be used with modules compiled with qjsc
+            because the corresponding module source code is not
+            necessarily present */
+@@ -76308,7 +76318,16 @@ static JSValue js_std_getenviron(JSContext *ctx, JSValueConst this_val,
+     obj = JS_NewObject(ctx);
+     if (JS_IsException(obj))
+         return JS_EXCEPTION;
++#if defined(__AROS__)
++    /* AROS keeps variables in the DOS environment, not in an environ
++       array: report none (std.getenv still reads single variables). */
++    {
++        static char *no_environ[] = { NULL };
++        envp = no_environ;
++    }
++#else
+     envp = environ;
++#endif
+     for(idx = 0; envp[idx] != NULL; idx++) {
+         name = envp[idx];
+         p = strchr(name, '=');
+@@ -76447,7 +76466,7 @@ static void js_std_file_finalizer(JSRuntime *rt, JSValueConst val)
+     JSSTDFile *s = JS_GetOpaque(val, ts->std_file_class_id);
+     if (s) {
+         if (s->f && !is_stdio(s->f)) {
+-#if !defined(__wasi__) && !defined(__3DS__)
++#if !defined(__wasi__) && !defined(__3DS__) && !defined(__AROS__)
+             if (s->is_popen)
+                 pclose(s->f);
+             else
+@@ -76537,7 +76556,7 @@ static JSValue js_std_open(JSContext *ctx, JSValueConst this_val,
+     return JS_EXCEPTION;
+ }
+ 
+-#if !defined(__wasi__) && !defined(__3DS__)
++#if !defined(__wasi__) && !defined(__3DS__) && !defined(__AROS__)
+ static JSValue js_std_popen(JSContext *ctx, JSValueConst this_val,
+                             int argc, JSValueConst *argv)
+ {
+@@ -76608,7 +76627,7 @@ static JSValue js_std_fdopen(JSContext *ctx, JSValueConst this_val,
+     return JS_EXCEPTION;
+ }
+ 
+-#if !defined(__wasi__) && !defined(__3DS__)
++#if !defined(__wasi__) && !defined(__3DS__) && !defined(__AROS__)
+ static JSValue js_std_tmpfile(JSContext *ctx, JSValueConst this_val,
+                               int argc, JSValueConst *argv)
+ {
+@@ -76687,7 +76706,7 @@ static JSValue js_std_file_close(JSContext *ctx, JSValueConst this_val,
+         return JS_ThrowTypeError(ctx, "invalid file handle");
+     if (is_stdio(s->f))
+         return JS_ThrowTypeError(ctx, "cannot close stdio");
+-#if !defined(__wasi__) && !defined(__3DS__)
++#if !defined(__wasi__) && !defined(__3DS__) && !defined(__AROS__)
+     if (s->is_popen)
+         err = js_get_errno(pclose(s->f));
+     else
+@@ -76925,7 +76944,7 @@ static JSValue js_std_file_putByte(JSContext *ctx, JSValueConst this_val,
+ }
+ 
+ /* urlGet */
+-#if !defined(__wasi__) && !defined(__3DS__)
++#if !defined(__wasi__) && !defined(__3DS__) && !defined(__AROS__)
+ 
+ #define URL_GET_PROGRAM "curl -s -i --"
+ #define URL_GET_BUF_SIZE 4096
+@@ -77152,7 +77171,7 @@ static const JSCFunctionListEntry js_std_funcs[] = {
+     JS_CFUNC_DEF("setenv", 1, js_std_setenv ),
+     JS_CFUNC_DEF("unsetenv", 1, js_std_unsetenv ),
+     JS_CFUNC_DEF("getenviron", 1, js_std_getenviron ),
+-#if !defined(__wasi__) && !defined(__3DS__)
++#if !defined(__wasi__) && !defined(__3DS__) && !defined(__AROS__)
+     JS_CFUNC_DEF("urlGet", 1, js_std_urlGet ),
+ #endif
+     JS_CFUNC_DEF("loadFile", 1, js_std_loadFile ),
+@@ -77161,7 +77180,7 @@ static const JSCFunctionListEntry js_std_funcs[] = {
+ 
+     /* FILE I/O */
+     JS_CFUNC_DEF("open", 2, js_std_open ),
+-#if !defined(__wasi__) && !defined(__3DS__)
++#if !defined(__wasi__) && !defined(__3DS__) && !defined(__AROS__)
+     JS_CFUNC_DEF("popen", 2, js_std_popen ),
+     JS_CFUNC_DEF("tmpfile", 0, js_std_tmpfile ),
+ #endif
+@@ -77380,7 +77399,7 @@ static JSValue js_os_ttySetRaw(JSContext *ctx, JSValueConst this_val,
+     }
+     return JS_UNDEFINED;
+ }
+-#elif !defined(__wasi__) && !defined(__3DS__)
++#elif !defined(__wasi__) && !defined(__3DS__) && !defined(__AROS__)
+ static JSValue js_os_ttyGetWinSize(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv)
+ {
+@@ -77589,7 +77608,7 @@ typedef void (*sighandler_t)(int sig_num);
+ static JSValue js_os_signal(JSContext *ctx, JSValueConst this_val,
+                             int argc, JSValueConst *argv)
+ {
+-#if !defined(__3DS__)
++#if !defined(__3DS__) && !defined(__AROS__)
+     JSRuntime *rt = JS_GetRuntime(ctx);
+     JSThreadState *ts = js_get_thread_state(rt);
+     JSOSSignalHandler *sh;
+@@ -77635,7 +77654,7 @@ static JSValue js_os_signal(JSContext *ctx, JSValueConst this_val,
+     return JS_UNDEFINED;
+ }
+ 
+-#if !defined(_WIN32) && !defined(__wasi__) && !defined(__3DS__)
++#if !defined(_WIN32) && !defined(__wasi__) && !defined(__3DS__) && !defined(__AROS__)
+ static JSValue js_os_cputime(JSContext *ctx, JSValueConst this_val,
+                              int argc, JSValueConst *argv)
+ {
+@@ -78032,6 +78051,25 @@ static int js_os_poll(JSContext *ctx)
+ done:
+     return 0;
+ }
++#elif defined(__AROS__)
++/* AROS has no poll(): run the timers and sleep until the next one. Read and
++   write handlers on file descriptors (os.setReadHandler/os.setWriteHandler)
++   are not served; signals and workers are not built on AROS. */
++static int js_os_poll(JSContext *ctx)
++{
++    JSRuntime *rt = JS_GetRuntime(ctx);
++    JSThreadState *ts = js_get_thread_state(rt);
++    int min_delay;
++
++    if (js_os_run_timers(rt, ctx, ts, &min_delay))
++        return -1;
++    if (min_delay == 0)
++        return 0; // expired timer
++    if (min_delay < 0)
++        return -1; /* no more events */
++    usleep((useconds_t)min_delay * 1000);
++    return 0;
++}
+ #else // !defined(_WIN32)
+ static int js_os_poll(JSContext *ctx)
+ {
+@@ -78489,7 +78527,7 @@ static char *realpath(const char *path, char *buf)
+ }
+ #endif
+ 
+-#if !defined(__wasi__) && !defined(__3DS__)
++#if !defined(__wasi__) && !defined(__3DS__) && !defined(__AROS__)
+ /* return [path, errorcode] */
+ static JSValue js_os_realpath(JSContext *ctx, JSValueConst this_val,
+                               int argc, JSValueConst *argv)
+@@ -78513,7 +78551,7 @@ static JSValue js_os_realpath(JSContext *ctx, JSValueConst this_val,
+ }
+ #endif
+ 
+-#if !defined(_WIN32) && !defined(__wasi__) && !defined(__3DS__)
++#if !defined(_WIN32) && !defined(__wasi__) && !defined(__3DS__) && !defined(__AROS__)
+ static JSValue js_os_symlink(JSContext *ctx, JSValueConst this_val,
+                               int argc, JSValueConst *argv)
+ {
+@@ -78675,7 +78713,7 @@ static int my_execvpe(const char *filename, char **argv, char **envp)
+ 
+ static void (*js_os_exec_closefrom)(int);
+ 
+-#if !defined(EMSCRIPTEN) && !defined(__wasi__) && !defined(__3DS__)
++#if !defined(EMSCRIPTEN) && !defined(__wasi__) && !defined(__3DS__) && !defined(__AROS__)
+ 
+ static js_once_t js_os_exec_once = JS_ONCE_INIT;
+ 
+@@ -78841,7 +78879,7 @@ static JSValue js_os_exec(JSContext *ctx, JSValueConst this_val,
+ 
+     }
+ 
+-#if !defined(EMSCRIPTEN) && !defined(__wasi__) && !defined(__3DS__)
++#if !defined(EMSCRIPTEN) && !defined(__wasi__) && !defined(__3DS__) && !defined(__AROS__)
+     // should happen pre-fork because it calls dlsym()
+     // and that's not an async-signal-safe function
+     js_once(&js_os_exec_once, js_os_exec_once_init);
+@@ -79489,6 +79527,8 @@ void js_std_set_worker_new_context_func(JSContext *(*func)(JSRuntime *rt))
+ #define OS_PLATFORM "hurd"
+ #elif defined(__3DS__)
+ #define OS_PLATFORM "3ds"
++#elif defined(__AROS__)
++#define OS_PLATFORM "aros"
+ #else
+ #define OS_PLATFORM "unknown"
+ #endif
+@@ -79513,7 +79553,7 @@ static const JSCFunctionListEntry js_os_funcs[] = {
+     JS_CFUNC_MAGIC_DEF("read", 4, js_os_read_write, 0 ),
+     JS_CFUNC_MAGIC_DEF("write", 4, js_os_read_write, 1 ),
+     JS_CFUNC_DEF("isatty", 1, js_os_isatty ),
+-#if !defined(__wasi__) && !defined(__3DS__)
++#if !defined(__wasi__) && !defined(__3DS__) && !defined(__AROS__)
+     JS_CFUNC_DEF("ttyGetWinSize", 1, js_os_ttyGetWinSize ),
+     JS_CFUNC_DEF("ttySetRaw", 1, js_os_ttySetRaw ),
+ #endif
+@@ -79528,7 +79568,7 @@ static const JSCFunctionListEntry js_os_funcs[] = {
+     OS_FLAG(SIGILL),
+     OS_FLAG(SIGSEGV),
+     OS_FLAG(SIGTERM),
+-#if !defined(_WIN32) && !defined(__wasi__) && !defined(__3DS__)
++#if !defined(_WIN32) && !defined(__wasi__) && !defined(__3DS__) && !defined(__AROS__)
+     OS_FLAG(SIGQUIT),
+     OS_FLAG(SIGPIPE),
+     OS_FLAG(SIGALRM),
+@@ -79571,10 +79611,10 @@ static const JSCFunctionListEntry js_os_funcs[] = {
+     JS_CFUNC_MAGIC_DEF("stat", 1, js_os_stat, 0 ),
+     JS_CFUNC_DEF("utimes", 3, js_os_utimes ),
+     JS_CFUNC_DEF("sleep", 1, js_os_sleep ),
+-#if !defined(__wasi__) && !defined(__3DS__)
++#if !defined(__wasi__) && !defined(__3DS__) && !defined(__AROS__)
+     JS_CFUNC_DEF("realpath", 1, js_os_realpath ),
+ #endif
+-#if !defined(_WIN32) && !defined(__wasi__) && !defined(__3DS__)
++#if !defined(_WIN32) && !defined(__wasi__) && !defined(__3DS__) && !defined(__AROS__)
+     JS_CFUNC_MAGIC_DEF("lstat", 1, js_os_stat, 1 ),
+     JS_CFUNC_DEF("symlink", 2, js_os_symlink ),
+     JS_CFUNC_DEF("readlink", 1, js_os_readlink ),

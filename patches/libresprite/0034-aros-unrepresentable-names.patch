@@ -1,0 +1,234 @@
+Title: AROS: refuse file names the system character set cannot hold
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: When a UTF-8 name could not be converted to the system character set, to_system_path (0025) passed the UTF-8 bytes to the file system; a file could be created under a wrong name instead of the operation failing.
+Change: to_system_path(utf8, out) returns false for such a name; to_system_path(utf8) throws std::runtime_error with the name and the character set. Queries (is_file, is_directory, file_size, stat-based checks, realpath, opendir/list_files, the file tree, the program icon) treat the name as absent; open_file returns nullptr with errno EILSEQ, and open_file_with_exception says the name uses characters this system cannot store; mkdir, rename, copy, unlink, chmod, rmdir and FSTREAM_PATH throw.
+Scope: AROS
+Upstream: local-only
+Verification: ABIv11 (AROS One, pool v11-3, 2026-11-16), no CHARSET set: "test-ж.png" pasted from the clipboard into Save As (SYS:) gives "Cannot open SYS:test-ж.png: the name uses characters this system cannot store"; List SYS:test#? finds nothing after the run. Polish names on v1 (0025 tests) unaffected in code path.
+Removal: AROS-specific.
+---
+diff --git a/src/app/aros_gui_renderer.cpp b/src/app/aros_gui_renderer.cpp
+index 39e4e422e2a3a076c6cd6e554658ec676f9546a8..ec59fcccdb07fc411ceb7a47bc6294a18c33664b 100644
+--- a/src/app/aros_gui_renderer.cpp
++++ b/src/app/aros_gui_renderer.cpp
+@@ -28,8 +28,10 @@ namespace app {
+ bool aros_gui_renderer(bool preference)
+ {
+   std::string mode = "AUTO";
+-  std::string program = base::to_system_path(base::get_app_path());
+-  if (struct DiskObject* icon = GetDiskObject((CONST_STRPTR)program.c_str())) {
++  std::string program;
++  struct DiskObject* icon = base::to_system_path(base::get_app_path(), program) ?
++    GetDiskObject((CONST_STRPTR)program.c_str()) : nullptr;
++  if (icon) {
+     if (STRPTR value = (STRPTR)FindToolType(icon->do_ToolTypes, (STRPTR)"GUI_RENDERER"))
+       mode = value;
+     FreeDiskObject(icon);
+diff --git a/src/app/file_system.cpp b/src/app/file_system.cpp
+index c22d1459790331ee464d683ea9409de6d778d024..8bc3335983322cd2b04723b32f23cba676edf1b1 100644
+--- a/src/app/file_system.cpp
++++ b/src/app/file_system.cpp
+@@ -481,7 +481,8 @@ const FileItemList& FileItem::children()
+     else
+ #endif
+     {
+-      DIR* dir = opendir(base::to_system_path(m_filename).c_str());
++      std::string sysPath;
++      DIR* dir = base::to_system_path(m_filename, sysPath) ? opendir(sysPath.c_str()) : nullptr;
+       if (dir) {
+         dirent* entry;
+         while ((entry = readdir(dir)) != NULL) {
+diff --git a/src/base/file_handle.cpp b/src/base/file_handle.cpp
+index 3783cc9da27f27a7179952c0a26fbf66ec3dae10..6dcfe771b166cbb18981dcb874bd6b86aeffde01 100644
+--- a/src/base/file_handle.cpp
++++ b/src/base/file_handle.cpp
+@@ -13,6 +13,7 @@
+ 
+ #include "base/string.h"
+ 
++#include <cerrno>
+ #include <stdexcept>
+ 
+ #ifdef _WIN32
+@@ -38,7 +39,12 @@ FILE* open_file_raw(const string& filename, const string& mode)
+   return _wfopen(from_utf8(filename).c_str(),
+                  from_utf8(mode).c_str());
+ #else
+-  return fopen(to_system_path(filename).c_str(), mode.c_str());
++  std::string sys;
++  if (!to_system_path(filename, sys)) {
++    errno = EILSEQ;   // not a name this system can store
++    return nullptr;
++  }
++  return fopen(sys.c_str(), mode.c_str());
+ #endif
+ }
+ 
+@@ -50,8 +56,12 @@ FileHandle open_file(const string& filename, const string& mode)
+ FileHandle open_file_with_exception(const string& filename, const string& mode)
+ {
+   FileHandle f(open_file_raw(filename, mode), [](auto ptr){ if(ptr) fclose(ptr); });
+-  if (!f)
++  if (!f) {
++    if (errno == EILSEQ)
++      throw runtime_error("Cannot open " + filename +
++                          ": the name uses characters this system cannot store");
+     throw runtime_error("Cannot open " + filename);
++  }
+   return f;
+ }
+ 
+diff --git a/src/base/fs_unix.h b/src/base/fs_unix.h
+index 47cb3396dac86957cb5f98335556a668efdeca89..e027f2fdecaa216dc47e15218d608286a0f0f5e9 100644
+--- a/src/base/fs_unix.h
++++ b/src/base/fs_unix.h
+@@ -43,16 +43,24 @@ extern std::string _AndroidStorageDir;
+ 
+ namespace base {
+ 
++// The path for a query; false when the name cannot exist on this system.
++static bool query_path(const std::string& path, std::string& out)
++{
++  return to_system_path(path, out);
++}
++
+ bool is_file(const std::string& path)
+ {
+   struct stat sts;
+-  return (stat(to_system_path(path).c_str(), &sts) == 0 && S_ISREG(sts.st_mode)) ? true: false;
++  std::string sys;
++  return (query_path(path, sys) && stat(sys.c_str(), &sts) == 0 && S_ISREG(sts.st_mode)) ? true: false;
+ }
+ 
+ bool is_directory(const std::string& path)
+ {
+   struct stat sts;
+-  return (stat(to_system_path(path).c_str(), &sts) == 0 && S_ISDIR(sts.st_mode)) ? true: false;
++  std::string sys;
++  return (query_path(path, sys) && stat(sys.c_str(), &sts) == 0 && S_ISDIR(sts.st_mode)) ? true: false;
+ }
+ 
+ void make_directory(const std::string& path)
+@@ -66,7 +74,8 @@ void make_directory(const std::string& path)
+ size_t file_size(const std::string& path)
+ {
+   struct stat sts;
+-  return (stat(to_system_path(path).c_str(), &sts) == 0) ? sts.st_size: 0;
++  std::string sys;
++  return (query_path(path, sys) && stat(sys.c_str(), &sts) == 0) ? sts.st_size: 0;
+ }
+ 
+ void move_file(const std::string& src, const std::string& dst)
+@@ -93,7 +102,8 @@ void delete_file(const std::string& path)
+ bool has_readonly_attr(const std::string& path)
+ {
+   struct stat sts;
+-  return (stat(to_system_path(path).c_str(), &sts) == 0 && ((sts.st_mode & S_IWUSR) == 0));
++  std::string sys;
++  return (query_path(path, sys) && stat(sys.c_str(), &sts) == 0 && ((sts.st_mode & S_IWUSR) == 0));
+ }
+ 
+ void remove_readonly_attr(const std::string& path)
+@@ -111,7 +121,10 @@ void remove_readonly_attr(const std::string& path)
+ Time get_modification_time(const std::string& path)
+ {
+   struct stat sts;
+-  int result = stat(to_system_path(path).c_str(), &sts);
++  std::string sys;
++  if (!query_path(path, sys))
++    return Time();
++  int result = stat(sys.c_str(), &sts);
+   if (result != 0)
+     return Time();
+ 
+@@ -208,7 +221,8 @@ std::string get_user_docs_folder()
+ std::string get_canonical_path(const std::string& path)
+ {
+   char buffer[PATH_MAX];
+-  if (realpath(to_system_path(path).c_str(), buffer) == NULL) {
++  std::string sys;
++  if (!query_path(path, sys) || realpath(sys.c_str(), buffer) == NULL) {
+     return path;
+   }
+   return from_system_path(buffer);
+@@ -217,7 +231,8 @@ std::string get_canonical_path(const std::string& path)
+ std::vector<std::string> list_files(const std::string& path)
+ {
+   std::vector<std::string> files;
+-  DIR* handle = opendir(to_system_path(path).c_str());
++  std::string sys;
++  DIR* handle = query_path(path, sys) ? opendir(sys.c_str()) : nullptr;
+   if (handle) {
+     dirent* item;
+     while ((item = readdir(handle)) != nullptr) {
+diff --git a/src/base/system_path.h b/src/base/system_path.h
+index 63792feb742b16272e7f82efcb4f657746a79113..a8524e068faf103abcf9fa87ab4073c8b7956fbb 100644
+--- a/src/base/system_path.h
++++ b/src/base/system_path.h
+@@ -15,12 +15,18 @@ namespace base {
+   // where they are passed to or come from the system. Elsewhere these
+   // return the name unchanged.
+ #ifdef __AROS__
++  // Converts a path for the system. Returns false when the name holds a
++  // character the system character set cannot represent (such a file
++  // cannot exist; the bytes must not reach the file system).
++  bool to_system_path(const std::string& utf8, std::string& out);
++  // The same, but throws std::runtime_error for such a name.
+   std::string to_system_path(const std::string& utf8);
+   std::string from_system_path(const std::string& name);
+   // Text for system widgets (menus, titles): characters the system
+   // character set lacks become '?'.
+   std::string to_system_text(const std::string& utf8);
+ #else
++  inline bool to_system_path(const std::string& utf8, std::string& out) { out = utf8; return true; }
+   inline const std::string& to_system_path(const std::string& utf8) { return utf8; }
+   inline const std::string& from_system_path(const std::string& name) { return name; }
+ #endif
+diff --git a/src/base/system_path_aros.cpp b/src/base/system_path_aros.cpp
+index 36cdb178d52000ce5a7b6c0b71c80d5303d2d290..b44b96dafc45e62f94c1343ad327e92247d077cf 100644
+--- a/src/base/system_path_aros.cpp
++++ b/src/base/system_path_aros.cpp
+@@ -18,6 +18,7 @@
+ #include <cerrno>
+ #include <cstring>
+ #include <mutex>
++#include <stdexcept>
+ 
+ namespace base {
+ 
+@@ -88,17 +89,23 @@ static std::string without_dot_components(const std::string& path)
+   return out;
+ }
+ 
+-std::string to_system_path(const std::string& path)
++bool to_system_path(const std::string& path, std::string& out)
+ {
+   const std::string utf8 = without_dot_components(path);
+-  if (is_ascii(utf8))
+-    return utf8;
++  if (is_ascii(utf8)) {
++    out = utf8;
++    return true;
++  }
++  return convert(system_charset().c_str(), "UTF-8", utf8, out);
++}
++
++std::string to_system_path(const std::string& path)
++{
+   std::string out;
+-  // A name the system character set cannot hold cannot exist on disk:
+-  // pass it on unchanged and let the call fail.
+-  if (convert(system_charset().c_str(), "UTF-8", utf8, out))
+-    return out;
+-  return utf8;
++  if (!to_system_path(path, out))
++    throw std::runtime_error("The name \"" + path + "\" uses characters that the system "
++                             "character set (" + system_charset() + ") does not have");
++  return out;
+ }
+ 
+ std::string to_system_text(const std::string& utf8)

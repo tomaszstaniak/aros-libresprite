@@ -1,0 +1,30 @@
+Title: AROS: name the port and the upstream date in the version
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: The AROS builds called themselves "1.3-dev (local build)" in the title bar and About box, which does not say which upstream state the port is.
+Change: On AROS COMMIT is "AROS port, upstream 2026-11-14" (the pinned master 89ea7597); VERSION reads "1.3-dev (AROS port, upstream 2026-11-14)". The package version is 1.3.99.20261114.
+Scope: AROS
+Upstream: local-only
+Verification: build only; shown in the title bar of the release builds
+Removal: update with the pin.
+---
+diff --git a/src/config.h b/src/config.h
+index 9f92bbbfc174fef53480d7253c7544095e0e3798..b28358bd3abc0b658b4d8e76ec3593aa618b1a6b 100644
+--- a/src/config.h
++++ b/src/config.h
+@@ -24,7 +24,12 @@
+ 
+ // General information
+ #define PACKAGE "LibreSprite"
++#ifdef __AROS__
++  // AROS port of the upstream master of 2026-11-14 (89ea7597)
++  #define COMMIT  "AROS port, upstream 2026-11-14"
++#else
+ #define COMMIT  "local build"
++#endif
+ #ifndef RELEASE_TAG
+     #define VERSION "1.3-dev (" COMMIT ")"
+ #else

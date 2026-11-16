@@ -1,0 +1,159 @@
+Title: Recognise AmigaDOS absolute paths (Volume:...)
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: std::filesystem::path::is_absolute() is false for AmigaDOS paths such as "RAM Disk:w/ls/data/x.js", so the scripting code joined them to the current directory ("AROS:/RAM Disk:w/...") and the script file formats (C array, PPM) never loaded; the file selector location bar and the launcher had the same check.
+Change: base::is_absolute_path(): the std::filesystem rule, plus on AROS a volume or assign name before the first slash. Used in app_scripting.cpp (2), filesystem_script.cpp, tools_script.cpp, file_selector.cpp and launcher.cpp.
+Scope: all platforms (AROS rule only under __AROS__)
+Upstream: candidate
+Verification: mainline x86_64, pool v1-1, 2026-11-16: log shows "Reading file RAM Disk:w/ls/data/scripts/formats/c_array.js" and ppm.js with no "Could not open"; before: "Could not open AROS:/RAM Disk:w/...". Same message seen before the fix on ABIv11 and the Pi.
+Removal: when upstream handles AmigaDOS paths.
+---
+diff --git a/src/app/script/api/filesystem_script.cpp b/src/app/script/api/filesystem_script.cpp
+index 8eefff4799da8440d7777127d999adde49d4ca6a..aeb2f07b9cacf91fdfb5cbecfd54ae8c3ba1be3b 100644
+--- a/src/app/script/api/filesystem_script.cpp
++++ b/src/app/script/api/filesystem_script.cpp
+@@ -10,6 +10,7 @@
+ // main thread, where the JS Promise is resolved. Relative paths resolve
+ // against the running script's directory; absolute paths pass through.
+ 
++#include "base/path.h"
+ #include "delta/Extension.hpp"
+ #include "delta/JSON.hpp"
+ #include "delta/StringUtils.hpp"
+@@ -39,8 +40,7 @@ namespace {
+   // Absolute paths pass through; relative paths resolve against the
+   // running script's directory (CWD when no script is active).
+   std::string resolvePath(const std::string& path) {
+-    std::filesystem::path p{path};
+-    if (p.is_absolute())
++    if (base::is_absolute_path(path))
+       return path;
+     std::string base = std::filesystem::current_path().string();
+     std::string script = app::AppScripting::getFileName();
+diff --git a/src/app/script/api/tools_script.cpp b/src/app/script/api/tools_script.cpp
+index 01423a3e9e267dcd979fda0bb3010df96dcaee6f..6a7555c4ed7d96a44b5a3a58f5f8ff140a381657 100644
+--- a/src/app/script/api/tools_script.cpp
++++ b/src/app/script/api/tools_script.cpp
+@@ -12,6 +12,7 @@
+ // app.transaction() scope the changes join the scope's transaction
+ // instead). The target document becomes active after the call.
+ 
++#include "base/path.h"
+ #include "delta/Extension.hpp"
+ #include "delta/JSON.hpp"
+ #include "di.hpp"
+@@ -75,8 +76,7 @@ namespace {
+   // same resolution as fs.*.
+   std::string resolveFontPath(const std::string& path)
+   {
+-    std::filesystem::path p{path};
+-    if (p.is_absolute())
++    if (base::is_absolute_path(path))
+       return path;
+     std::string base = std::filesystem::current_path().string();
+     const std::string script = app::AppScripting::getFileName();
+diff --git a/src/app/script/app_scripting.cpp b/src/app/script/app_scripting.cpp
+index 90fa3d539645a636c168e6e8ef676b8f3d09a6cd..8914f8f4dde052ab62ada798d079d58f38646404 100644
+--- a/src/app/script/app_scripting.cpp
++++ b/src/app/script/app_scripting.cpp
+@@ -146,7 +146,7 @@ std::unique_ptr<ScriptTimer> tickTimer;
+ // names against loadedScripts no matter how the path was passed in.
+ std::string canonicalScriptPath(const std::string& path) {
+   std::filesystem::path p{path};
+-  if (!p.is_absolute())
++  if (!base::is_absolute_path(path))
+     p = std::filesystem::current_path() / p;
+   return p.lexically_normal().string();
+ }
+@@ -543,7 +543,7 @@ namespace app {
+     // Absolutize the entry path: it is the base for the entry module's
+     // relative imports.
+     std::string absPath = fileName;
+-    if (!std::filesystem::path(fileName).is_absolute())
++    if (!base::is_absolute_path(fileName))
+       absPath = (std::filesystem::current_path() / fileName).string();
+ 
+     // Lexically normalized (".."/"." collapsed) rather than the raw
+diff --git a/src/app/ui/file_selector.cpp b/src/app/ui/file_selector.cpp
+index 3a7d81eee242aafd3689b8973b62686ee09f4916..0a9d735b17a8de01ae5c7d92eb52a55713179424 100644
+--- a/src/app/ui/file_selector.cpp
++++ b/src/app/ui/file_selector.cpp
+@@ -977,7 +977,7 @@ bool FileSelector::onLocationEntryEnter()
+   namespace fs = std::filesystem;
+   fs::path current(currentFolder->fileName());
+   fs::path input(typedPath);
+-  fs::path resolved = (input.is_absolute() ? input : (current / input)).lexically_normal();
++  fs::path resolved = (base::is_absolute_path(typedPath) ? input : (current / input)).lexically_normal();
+ 
+   std::string buf = base::fix_path_separators(resolved.string());
+ 
+diff --git a/src/base/launcher.cpp b/src/base/launcher.cpp
+index b1f11530a8c0ad9724fb77740c93cf609f7c4be7..ad33d009c45ad0e47d4c7e29dbde4d3a61f43507 100644
+--- a/src/base/launcher.cpp
++++ b/src/base/launcher.cpp
+@@ -12,6 +12,7 @@
+ #include "base/fs.h"
+ #include "base/launcher.h"
+ #include "base/path.h"
++#include "base/path.h"
+ #include "base/string.h"
+ 
+ #include <cerrno>
+@@ -531,7 +532,7 @@ ProcessInfo spawn_process(const std::string& path, const std::vector<std::string
+   std::string exe = path;
+   if (!cwd.empty() && exe.find('/') != std::string::npos) {
+     std::filesystem::path p{exe};
+-    if (!p.is_absolute())
++    if (!is_absolute_path(exe))
+       exe = (std::filesystem::path(cwd) / p).lexically_normal().string();
+   }
+ #if defined(_WIN32)
+diff --git a/src/base/path.cpp b/src/base/path.cpp
+index 271a050798324e0b75b696bfcdf11c59f0c5810f..3329c8a1639f2a09a271e93865b19ea919d1432c 100644
+--- a/src/base/path.cpp
++++ b/src/base/path.cpp
+@@ -11,6 +11,8 @@
+ 
+ #include "base/path.h"
+ 
++#include <filesystem>
++
+ #include "base/fs.h"            // TODO we should merge base/path.h and base/fs.h
+ #include "base/string.h"
+ 
+@@ -32,6 +34,16 @@ bool is_path_separator(std::string::value_type chr)
+   return (chr == '\\' || chr == '/');
+ }
+ 
++bool is_absolute_path(const std::string& path)
++{
++#ifdef __AROS__
++  auto colon = path.find(':');
++  if (colon != std::string::npos && colon < path.find('/'))
++    return true;
++#endif
++  return std::filesystem::path(path).is_absolute();
++}
++
+ // Where the last path component starts. On AROS the colon after a volume or
+ // assign name ("Work:", "RAM:") also ends a path component.
+ static bool is_component_boundary(std::string::value_type chr)
+diff --git a/src/base/path.h b/src/base/path.h
+index cbda86e425ff0f9199933ef10adc82d71d913ecd..4c581024580089d0fe7e1b70b0c59cb010785098 100644
+--- a/src/base/path.h
++++ b/src/base/path.h
+@@ -18,6 +18,11 @@ namespace base {
+   // (any of '\' or '/' characters).
+   bool is_path_separator(std::string::value_type chr);
+ 
++  // Returns true for an absolute path: std::filesystem's rule, and on AROS
++  // also a path that starts with a volume or assign name ("Work:x",
++  // "RAM Disk:", "PROGDIR:data").
++  bool is_absolute_path(const std::string& path);
++
+   // Returns only the path (without the last trailing slash).
+   std::string get_file_path(const std::string& filename);
+ 

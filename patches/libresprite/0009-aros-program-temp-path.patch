@@ -1,0 +1,81 @@
+Title: Program path from PROGDIR: and T: as temporary drawer on AROS
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: get_app_path reads /proc/self/exe, which AROS lacks, so the data drawer was not found ("gui.xml was not found"). The temporary drawer defaulted to /tmp.
+Change: Program path from GetProgramDir/NameFromLock and GetProgramName; T: as temporary drawer.
+Scope: AROS
+Upstream: candidate
+Verification: Built for mainline AROS x86_64 (GCC 10.5, SDK nightly 20261110); LibreSprite starts on nightly 20261113 (pool v1-1, 2026-11-16)
+Removal: None planned.
+---
+diff --git a/src/base/fs_unix.h b/src/base/fs_unix.h
+index 3e9754d4890c887c2e2877e3d2f1d6041fe55dc0..61b423a4ee0dfd547128f3ab8e38e51cff08d792 100644
+--- a/src/base/fs_unix.h
++++ b/src/base/fs_unix.h
+@@ -12,11 +12,17 @@
+ #include <climits>              // Required for PATH_MAX
+ #include <cstdio>               // Required for rename()
+ #include <cstdlib>
++#include <cstring>
+ #include <ctime>
+ #include <stdexcept>
+ #include <vector>
+ #include <filesystem>
+ 
++#if defined(__AROS__)
++#include <dos/dos.h>
++#include <proto/dos.h>
++#endif
++
+ #if __APPLE__
+ #include <mach-o/dyld.h>
+ #elif __FreeBSD__
+@@ -130,6 +136,22 @@ std::string get_current_path()
+ 
+ std::string get_app_path()
+ {
++#if defined(__AROS__)
++
++  // AROS has no /proc: the program's drawer is PROGDIR:, its name comes
++  // from the process. Gives an AmigaDOS path such as "Work:LibreSprite/LibreSprite".
++  std::vector<char> path(1024);
++  BPTR lock = GetProgramDir();
++  if (!lock || !NameFromLock(lock, &path[0], path.size()))
++    return "PROGDIR:LibreSprite";
++  std::vector<char> name(256);
++  if (!GetProgramName(&name[0], name.size()))
++    strcpy(&name[0], "LibreSprite");
++  AddPart(&path[0], FilePart(&name[0]), path.size());
++  return std::string(&path[0]);
++
++#else
++
+   std::vector<char> path(MAXPATHLEN);
+ 
+ #if __APPLE__
+@@ -148,6 +170,8 @@ std::string get_app_path()
+ #endif
+ 
+   return std::string(&path[0]);
++
++#endif
+ }
+ 
+ std::string get_temp_path()
+@@ -155,8 +179,11 @@ std::string get_temp_path()
+   char* tmpdir = getenv("TMPDIR");
+   if (tmpdir)
+     return tmpdir;
+-  else
+-    return "/tmp";
++#if defined(__AROS__)
++  return "T:";
++#else
++  return "/tmp";
++#endif
+ }
+ 
+ std::string get_user_docs_folder()

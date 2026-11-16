@@ -1,0 +1,34 @@
+LibreSprite for AROS: components and licences
+
+LibreSprite is free software under the GNU General Public License,
+version 2 (LICENSE.txt in the program drawer). The program includes the
+following libraries; their licence texts are in this drawer.
+
+LibreSprite (upstream master 2026-11-14, 89ea7597) with the AROS patches
+  GPL-2.0, ../LICENSE.txt
+  https://github.com/LibreSprite/LibreSprite
+SDL 3.4.12 with the AROS port of aros-development-team/contrib and AROS patches
+  zlib licence, SDL3.txt
+SDL_image 3.4.4
+  zlib licence, SDL3_image.txt
+GNU libiconv 1.19
+  GNU LGPL 2.1, libiconv-LGPL-2.1.txt
+giflib 5.2.2
+  MIT licence, giflib.txt
+libarchive 3.8.11
+  BSD 2-clause licence, libarchive.txt
+pixman 0.42.2
+  MIT licence, pixman.txt
+TinyXML-2 9.0.0
+  zlib licence, tinyxml2.txt
+QuickJS-ng 0.11.0
+  MIT licence, QuickJS.txt
+FreeType 2.14.3 (from the AROS SDK)
+  FreeType Project Licence, FreeType-FTL.txt
+delta, simpleini, modp_b64, observable (bundled with LibreSprite)
+  delta.txt, simpleini.txt, modp_b64.txt, observable.txt
+
+Source code of LibreSprite, its AROS patches and the build scripts:
+  https://github.com/tomaszstaniak/aros-libresprite
+Source code of the SDL, SDL_image and libiconv build for AROS:
+  https://github.com/tomaszstaniak/aros-sdl

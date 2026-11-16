@@ -1,0 +1,79 @@
+Title: AROS: minimum stack where the start-up code ignores __stack
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: The ABIv11 start-up code ignores __stack: LibreSprite ran on the Shell stack (262144 bytes in AROS One, 40960 by default elsewhere) or the icon stack. Mainline honours __stack since AROS PR #2150.
+Change: src/main/aros_stack.c: a PROGRAM_ENTRIES entry at priority -60 (the same place as PR #2150) runs the rest of the start-up chain on a stack of __stack bytes via NewStackSwap when the current stack is smaller, so exit() returns through it. Where the start-up already provided the stack it only continues the chain.
+Scope: AROS
+Upstream: local-only (the system fix is AROS PR #2150, merged on mainline)
+Verification: ABIv11 (AROS One, pool v11-3, 2026-11-16): builds with no warnings with GCC 10.5 and SDK-202609; started from a Shell with a 262144-byte stack, new sprite, drawing, PNG save with Enter, Intuition menu, AROS Capture picture pasted, LibreSprite picture shown by MultiView CLIPBOARD, clean exit (no task or pthread left). Mainline x86_64 rebuilt with no warnings. (--version with Stack 262144 and with Stack 9000000 both ran to app_main return)
+Removal: when every supported system honours __stack.
+---
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 7448f653e790c3a0793c38ab9a844b2c0f0c31b8..4264af372bb49ff6e249b8e2ca04ec805d8cec46 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -119,6 +119,9 @@ add_executable(libresprite WIN32
+ 
+ if(NOT CMAKE_SYSTEM_NAME STREQUAL "AROS")
+   set(httplib_target httplib)
++else()
++  # minimum stack (__stack) also where the start-up code ignores it
++  target_sources(libresprite PRIVATE main/aros_stack.c)
+ endif()
+ 
+ target_link_libraries(libresprite ${KEEP_INJECTIONS_BEGIN}
+diff --git a/src/main/aros_stack.c b/src/main/aros_stack.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..2bfa0f7920e3368e09223d7d6188e3492b9116be
+--- /dev/null
++++ b/src/main/aros_stack.c
+@@ -0,0 +1,46 @@
++/* LibreSprite | Copyright (C) 2026  LibreSprite contributors
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++ * AROS: run the program on a stack of at least __stack bytes (main.cpp).
++ *
++ * A Shell start runs the program on the Shell's stack, a Workbench start on
++ * the icon's. Mainline start-up code swaps to __stack itself (AROS PR #2150,
++ * same entry); the ABIv11 start-up does not. This entry runs at the same
++ * place in the start-up chain: after detaching (-100), before the C library
++ * set-up and main(), so exit() from anywhere comes back here and the stack is
++ * freed. Where the stack is already large enough it only continues the chain.
++ */
++
++#include <aros/startup.h>
++#include <aros/symbolsets.h>
++#include <exec/memory.h>
++#include <exec/tasks.h>
++#include <proto/exec.h>
++
++extern unsigned long __stack;
++
++static void libresprite_stack(struct ExecBase *SysBase)
++{
++    struct Task *me = FindTask(NULL);
++    IPTR want = ((IPTR)__stack + 15) & ~(IPTR)15;
++    IPTR have = (IPTR)me->tc_SPUpper - (IPTR)me->tc_SPLower;
++    struct StackSwapStruct sss;
++    struct StackSwapArgs args = { { 0 } };
++    UBYTE *stack;
++
++    if (want <= have || !(stack = AllocMem(want, MEMF_ANY))) {
++        __startup_entries_next();
++        return;
++    }
++    sss.stk_Lower = stack;
++    sss.stk_Upper = stack + want;
++    sss.stk_Pointer = sss.stk_Upper;
++    args.Args[0] = (IPTR)SysBase;
++    NewStackSwap(&sss, (APTR)___startup_entries_next, &args);
++    FreeMem(stack, want);
++}
++
++ADD2SET(libresprite_stack, PROGRAM_ENTRIES, -60);

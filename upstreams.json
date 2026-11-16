@@ -1,0 +1,20 @@
+{
+  "repositories": {
+    "libresprite": {
+      "url": "https://github.com/LibreSprite/LibreSprite.git",
+      "commit": "89ea7597ed1d779e85c0019555f5b97c7eac22f0"
+    }
+  },
+  "distfiles": {
+    "giflib": {
+      "file": "giflib-5.2.2.tar.gz",
+      "url": "https://sourceforge.net/projects/giflib/files/giflib-5.2.2.tar.gz/download",
+      "sha256": "be7ffbd057cadebe2aa144542fd90c6838c6a083b5e8a9048b8ee3b66b29d5fb"
+    },
+    "libarchive": {
+      "file": "libarchive-3.8.11.tar.gz",
+      "url": "https://github.com/libarchive/libarchive/releases/download/v3.8.11/libarchive-3.8.11.tar.gz",
+      "sha256": "900fe9fc7237c2b04f090f3c3648de8fe597525771f5035016537ce2d667d12b"
+    }
+  }
+}

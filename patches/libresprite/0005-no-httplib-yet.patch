@@ -1,0 +1,101 @@
+Title: AROS: build without httplib; fetch() reports that it is not available
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: cpp-httplib needs ifaddrs.h and would make the program open bsdsocket.library at start, so it could not start without a running TCP/IP stack.
+Change: Do not build httplib on AROS; fetch() completes with "fetch() is not available on AROS yet".
+Scope: AROS
+Upstream: local-only
+Verification: Built for mainline AROS x86_64 (GCC 10.5, SDK nightly 20261110); LibreSprite starts on nightly 20261113 (pool v1-1, 2026-11-16)
+Removal: When fetch() gets an AROS implementation (lazy bsdsocket, TLS from aros-crypto).
+---
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 9b33250ff771f014f9992c7ddc9ac9e0756c1292..86e8aa8cf33af28c149159a12563f950b40c6ed7 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -117,6 +117,10 @@ add_executable(libresprite WIN32
+   ${win32_resources}
+   ${x11_resources})
+ 
++if(NOT CMAKE_SYSTEM_NAME STREQUAL "AROS")
++  set(httplib_target httplib)
++endif()
++
+ target_link_libraries(libresprite ${KEEP_INJECTIONS_BEGIN}
+   app-lib
+   base-lib
+@@ -134,7 +138,7 @@ target_link_libraries(libresprite ${KEEP_INJECTIONS_BEGIN}
+   undo
+   delta
+   ${KEEP_INJECTIONS_END}
+-  httplib
++  ${httplib_target}
+   ${LibArchive_LIBRARY}
+   ${TINYXML2_LIBRARY}
+   ${JPEG_LIBRARIES}
+diff --git a/src/app/CMakeLists.txt b/src/app/CMakeLists.txt
+index 58a86495f52b31bd6b34e8f8a6d4fc9e8ddf787f..99aad6bd7339fc864c9346b95d068f1845b776c5 100644
+--- a/src/app/CMakeLists.txt
++++ b/src/app/CMakeLists.txt
+@@ -498,4 +498,6 @@ endif()
+ 
+ # The script API includes httplib.h (http_internal.cpp): link the target so
+ # its compile definitions (CPPHTTPLIB_OPENSSL_SUPPORT) match httplib.cpp.
+-target_link_libraries(app-lib PRIVATE httplib)
++if(NOT CMAKE_SYSTEM_NAME STREQUAL "AROS")
++  target_link_libraries(app-lib PRIVATE httplib)
++endif()
+diff --git a/src/app/script/api/http_internal.cpp b/src/app/script/api/http_internal.cpp
+index 233bfb9681fd1dc7c4422446c72bef40297108d7..ab1e699e6e4ac4bdc5c9777912f7e0e8b95a11d8 100644
+--- a/src/app/script/api/http_internal.cpp
++++ b/src/app/script/api/http_internal.cpp
+@@ -9,7 +9,29 @@
+ 
+ // The browser has no sockets: the web build uses the fetch() implementation
+ // from http_internal_wasm.cpp instead.
+-#ifndef __EMSCRIPTEN__
++#if defined(__AROS__)
++
++namespace script {
++
++  // Not available yet on AROS: requests fail with a message instead of
++  // tying start-up to a running TCP/IP stack.
++  app::TaskHandle httpFetch(const std::string&, const std::string&, const std::string&,
++                            bool, const std::map<std::string, std::string>&,
++                            std::function<void(HttpResult&&)>&& cb) {
++    return app::TaskManager::instance().addTask<HttpResult>(
++      []{
++        HttpResult result;
++        result.error = true;
++        result.reason = "fetch() is not available on AROS yet";
++        return result;
++      },
++      std::move(cb),
++      []{});
++  }
++
++}
++
++#elif !defined(__EMSCRIPTEN__)
+ 
+ #include "delta/StringUtils.hpp"
+ #include "httplib/httplib.h"
+diff --git a/third_party/CMakeLists.txt b/third_party/CMakeLists.txt
+index 8a8cac77ee3b854b72ad900bfa172f743e2b2f1a..9661e6a09fa19763ad4bff5efca6e663611705f1 100644
+--- a/third_party/CMakeLists.txt
++++ b/third_party/CMakeLists.txt
+@@ -11,7 +11,11 @@ add_subdirectory(simpleini)
+ add_subdirectory(modp_b64)
+ add_subdirectory(quickjs-amalgam)
+ add_subdirectory(delta)
+-add_subdirectory(httplib)
++# fetch() over httplib needs BSD sockets at start-up; on AROS they would tie
++# the program to a running TCP/IP stack (see app/script/api/http_internal.cpp).
++if(NOT CMAKE_SYSTEM_NAME STREQUAL "AROS")
++  add_subdirectory(httplib)
++endif()
+ 
+ # Disable observable tests
+ set(OBSERVABLE_TESTS OFF CACHE BOOL "Compile observable tests")

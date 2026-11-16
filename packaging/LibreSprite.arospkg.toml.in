@@ -1,0 +1,17 @@
+id              = "libresprite"
+version         = "@VERSION@"
+revision        = @REVISION@
+summary         = "Pixel art editor and animated sprite tool"
+category        = "graphics/edit"
+license         = "GPL-2.0-only"
+kind            = "app"
+arch            = "@ARCH@"
+abi             = "@ABI@"
+subdir          = "LibreSprite"
+icon            = "LibreSprite.info"
+depends         = []
+depends_checked = true
+post_install_notes = [
+  "Start it from the LibreSprite icon. Settings are kept in ENVARC:LibreSprite.",
+  "The GUI_RENDERER tool type in the icon chooses the drawing: AUTO, GPU (OpenGL) or CPU.",
+]
