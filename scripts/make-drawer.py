@@ -26,7 +26,7 @@ WORK = ROOT / "work/libresprite"
 # Libraries the program opens at start-up (__aros_libreq_* without a weak
 # fallback, read from each build): checked per target, never copied across.
 COMMON_LIBS = ["commodities.library", "cybergraphics.library", "datatypes.library",
-               "gadtools.library", "icon.library", "iffparse.library", "jpeg.library",
+               "gadtools.library", "icon.library", "iffparse.library", "jfif.library",
                "keymap.library", "png.library", "workbench.library", "z1.library"]
 TARGETS = {
     "aros-x86_64-abiv1-pc": ("x86_64", "v1", ["posixc.library", "stdc.library", "stdcio.library"]),
@@ -37,7 +37,7 @@ TARGETS = {
 LIB_BASES = {"CxBase": "commodities.library", "CyberGfxBase": "cybergraphics.library",
              "DataTypesBase": "datatypes.library", "GadToolsBase": "gadtools.library",
              "IconBase": "icon.library", "IFFParseBase": "iffparse.library",
-             "JpegBase": "jpeg.library", "KeymapBase": "keymap.library", "PngBase": "png.library",
+             "JpegBase": "jfif.library", "KeymapBase": "keymap.library", "PngBase": "png.library",
              "WorkbenchBase": "workbench.library", "Z1Base": "z1.library",
              "PosixCBase": "posixc.library", "StdCBase": "stdc.library", "StdCIOBase": "stdcio.library",
              "CrtBase": "crt.library", "StdlibBase": "stdlib.library", "MBase": "m.library",
@@ -71,7 +71,14 @@ def required_libraries(t, binary):
     unknown = found - set(LIB_BASES) - CORE_BASES
     if unknown:
         raise SystemExit(f"unknown library bases {sorted(unknown)}: add them to LIB_BASES")
-    return sorted(LIB_BASES[b] for b in found if b in LIB_BASES)
+    libs = sorted(LIB_BASES[b] for b in found if b in LIB_BASES)
+    # The base name does not always give the library name (JpegBase opens
+    # jfif.library): every name must be the one the program opens.
+    names = set(re.findall(rb"[a-z0-9_.]+\.library", Path(binary).read_bytes()))
+    absent = [l for l in libs if l.encode() not in names]
+    if absent:
+        raise SystemExit(f"library names not found in the program: {absent}: fix LIB_BASES")
+    return libs
 
 
 def sha256(p):

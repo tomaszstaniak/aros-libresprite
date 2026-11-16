@@ -5,7 +5,7 @@ Author: aros-libresprite project
 Problem: CMakeLists.txt adds -Wl,--gc-sections for every system except Darwin and SunOS. AROS executables are relocatable ELF objects without an entry symbol; ld then fails with "gc-sections requires either an entry or an undefined symbol", so every configure link check fails and configuration stops (pid_t "doesn't exist").
 Change: Treat AROS like SunOS: no section garbage collection flags.
 Scope: all AROS targets
-Upstream: candidate
+Upstream: https://github.com/libarchive/libarchive/pull/3861 (open, submitted 2026-11-16)
 Verification: libarchive configures and builds for mainline x86_64 (scripts/deps.py)
 Removal: when libarchive excludes AROS itself
 ---
