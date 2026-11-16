@@ -38,9 +38,9 @@ The archives are on the [releases page](https://github.com/tomaszstaniak/aros-li
 
 | System | Archive |
 |---|---|
-| x86_64, ABIv11 distributions | `libresprite-1.3.99.20261114-aros2-aros-x86_64-abiv11-pc.zip` |
-| x86_64, mainline AROS (ABIv1) | `libresprite-1.3.99.20261114-aros2-aros-x86_64-abiv1-pc.zip` |
-| Raspberry Pi, mainline AROS | `libresprite-1.3.99.20261114-aros2-aros-aarch64-abiv1-raspi.zip` |
+| x86_64, ABIv11 distributions | `libresprite-1.3.99.20261114-aros3-aros-x86_64-abiv11-pc.zip` |
+| x86_64, mainline AROS (ABIv1) | `libresprite-1.3.99.20261114-aros3-aros-x86_64-abiv1-pc.zip` |
+| Raspberry Pi, mainline AROS | `libresprite-1.3.99.20261114-aros3-aros-aarch64-abiv1-raspi.zip` |
 
 A program built for one of these systems does not run on the others. With apkg:
 

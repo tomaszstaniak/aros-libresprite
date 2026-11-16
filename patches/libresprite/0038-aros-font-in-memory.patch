@@ -1,0 +1,84 @@
+Title: AROS: read TrueType fonts into memory instead of keeping the file open
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-16
+Author: aros-libresprite project
+Problem: FreeType from the AROS SDK keeps a TrueType font file open with a DOS handle while the face exists, and a font that is still referenced when the program ends is never closed. After LibreSprite quit, data/fonts/font.ttf stayed "in use" until the next boot, so apkg remove kept the drawer and an upgrade could not replace the file.
+Change: On AROS, ft::Lib::open reads the font file into a buffer owned by the Lib object (base::open_file, then FT_OPEN_MEMORY); the file is closed at once and the buffer is freed after FT_Done_FreeType.
+Scope: AROS (all targets)
+Upstream: local-only
+Verification: builds without warnings for x86_64 ABIv11, mainline x86_64 and Raspberry Pi. ABIv11 (AROS One, pool v11-3, 2026-11-16): before, Delete of font.ttf after quitting gave "object is in use"; with this patch, the same steps (start, script prompts, New File dialog, quit) and Delete reports the file deleted.
+Removal: when LibreSprite releases every font before exit, or the SDK FreeType closes its streams at exit.
+---
+diff --git a/src/ft/lib.h b/src/ft/lib.h
+index e7f7a6114d756cffe4b93507518ae7a9389dea63..024a16faefd1db68b6c30aefac4d9c487a5f4040 100644
+--- a/src/ft/lib.h
++++ b/src/ft/lib.h
+@@ -9,8 +9,17 @@
+ #include "base/disable_copying.h"
+ #include "ft/freetype_headers.h"
+ 
++#include <cstring>
+ #include <string>
+ 
++#ifdef __AROS__
++#include "base/file_handle.h"
++
++#include <cstdio>
++#include <list>
++#include <vector>
++#endif
++
+ namespace ft {
+ 
+   class Lib {
+@@ -31,8 +40,21 @@ namespace ft {
+     FT_Face open(const std::string& filename) {
+       FT_Open_Args args;
+       memset(&args, 0, sizeof(args));
++#ifdef __AROS__
++      // FreeType keeps the font file open while the face exists, with a
++      // DOS file handle that is not closed when the program ends. Fonts
++      // that live until exit then stay "in use" until the next boot.
++      // Read the file into memory instead; the buffer lives as long as
++      // this library object, which outlives its faces.
++      if (!readFile(filename))
++        return nullptr;
++      args.flags = FT_OPEN_MEMORY;
++      args.memory_base = m_buffers.back().data();
++      args.memory_size = FT_Long(m_buffers.back().size());
++#else
+       args.flags = FT_OPEN_PATHNAME;
+       args.pathname = (FT_String*)filename.c_str();
++#endif
+ 
+       FT_Face face = nullptr;
+       FT_Error err = FT_Open_Face(m_ft, &args, 0, &face);
+@@ -42,6 +64,26 @@ namespace ft {
+     }
+ 
+   private:
++#ifdef __AROS__
++    bool readFile(const std::string& filename) {
++      base::FileHandle f = base::open_file(filename, "rb");
++      if (!f)
++        return false;
++      std::vector<FT_Byte> data;
++      FT_Byte chunk[16384];
++      size_t n;
++      while ((n = std::fread(chunk, 1, sizeof(chunk), f.get())) > 0)
++        data.insert(data.end(), chunk, chunk + n);
++      if (std::ferror(f.get()) || data.empty())
++        return false;
++      m_buffers.push_back(std::move(data));
++      return true;
++    }
++
++    // Freed after ~Lib() has run FT_Done_FreeType(), which closes the
++    // faces that read from these buffers.
++    std::list<std::vector<FT_Byte>> m_buffers;
++#endif
+     FT_Library m_ft;
+ 
+     DISABLE_COPYING(Lib);
