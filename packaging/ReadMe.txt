@@ -74,6 +74,8 @@ Known limitations
 - The window's menu bar holds one level of submenus. Commands that sit
   deeper are reached through their keyboard shortcuts.
 - The file system functions for scripts handle ASCII file names only.
+- Known issue: resizing the window very fast for a long time can leave
+  LibreSprite unresponsive. Save your work first, and please report it.
 - All testing so far was done in QEMU. Reports from real computers are
   welcome.
 

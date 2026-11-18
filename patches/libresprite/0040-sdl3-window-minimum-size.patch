@@ -1,0 +1,48 @@
+Title: SDL3: minimum window size; never create an empty surface
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-18
+Author: aros-libresprite project
+Problem: A window shrunk until its client area divided by the UI scale is 0 makes SDL3Display::recreateSurface() ask SDL_CreateSurface for an empty surface; the "Failed to create surface" exception ends the program and unsaved work is lost. Seen on AROS One after fast resizing down to a 32 pixel wide window.
+Change: The surface size is at least 1x1. The window also asks SDL for a minimum size of 320x240; the AROS SDL backend does not apply a minimum set after the window opened (measured: the window still shrank to 32 px), so on AROS only the clamp takes effect.
+Scope: SDL3 backend, all platforms
+Upstream: candidate (LibreSprite)
+Verification: builds for x86_64 ABIv11, mainline x86_64 and Raspberry Pi without warnings. The crash case itself was not re-run after the change.
+Removal: when upstream sets a minimum size and checks the surface size.
+---
+diff --git a/src/she/sdl3/sdl3_display.cpp b/src/she/sdl3/sdl3_display.cpp
+index a63b4585ccf1b1070a4283d0ca0721df2d529251..b59c075b271415f60a7b6bf4ed59e8bf176dcd68 100644
+--- a/src/she/sdl3/sdl3_display.cpp
++++ b/src/she/sdl3/sdl3_display.cpp
+@@ -22,6 +22,7 @@
+ 
+ #include <SDL3/SDL.h>
+ 
++#include <algorithm>
+ #include <cstdint>
+ #include <sstream>
+ #include <iostream>
+@@ -62,6 +63,11 @@ namespace she {
+       if (!m_window)
+ 	      throw DisplayCreationException(SDL_GetError());
+ 
++      // A window shrunk to almost nothing leaves no room for the UI, and a
++      // client area of 0 pixels makes recreateSurface() fail and end the
++      // program. Keep the window usable.
++      SDL_SetWindowMinimumSize(m_window, 320, 240);
++
+       if (gpu)
+ 	      m_renderer = SDL_CreateRenderer(m_window, nullptr);
+ 
+@@ -167,7 +173,9 @@ namespace she {
+   {
+     if (!m_scale)
+       return;
+-    auto  newSurface = new SDL3Surface(width() / m_scale, height() / m_scale, SDL3Surface::DeleteAndDestroy);
++    // Never ask for an empty surface: SDL_CreateSurface fails on 0 and the
++    // exception would end the program in the middle of a resize.
++    auto  newSurface = new SDL3Surface(std::max(1, width() / m_scale), std::max(1, height() / m_scale), SDL3Surface::DeleteAndDestroy);
+     if (m_surface) {
+       m_surface->blitTo(newSurface, 0, 0, 0, 0, width() / m_scale, height() / m_scale);
+       m_surface->dispose();

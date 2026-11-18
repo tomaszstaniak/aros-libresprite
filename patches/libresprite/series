@@ -36,3 +36,5 @@
 0036-mouse-position-before-buttons.patch
 0037-aros-version-label.patch
 0038-aros-font-in-memory.patch
+0039-scroll-center-without-editor.patch
+0040-sdl3-window-minimum-size.patch

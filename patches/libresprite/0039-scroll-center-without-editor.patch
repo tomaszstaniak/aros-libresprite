@@ -1,0 +1,39 @@
+Title: Scroll to center: do nothing without an open sprite
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-18
+Author: aros-libresprite project
+Problem: ScrollCenterCommand (Shift+C) has no onEnabled and calls current_editor->setDefaultScroll(); on the Home tab, with no sprite open, current_editor is null and LibreSprite crashes in View::getView(nullptr). Seen on AROS One while typing into the Home tab; the code path is the same on every system.
+Change: onEnabled returns false while there is no current editor, so the shortcut does nothing.
+Scope: all platforms
+Upstream: candidate (LibreSprite)
+Verification: ABIv11 (AROS One, pool v11-4, 2026-11-18): Shift+C on the Home tab crashed 1.3.99.20261114-aros3 (Software Failure in ui::View::getView, RDI=0, called from Context::executeCommand); with this patch the same keys do nothing.
+Removal: when upstream guards the command.
+---
+diff --git a/src/app/commands/cmd_scroll_center.cpp b/src/app/commands/cmd_scroll_center.cpp
+index 00667192ac19514842ecac9975cfd3b36534e42b..a438ff661cb58fb6ad3a3eff39d2391ba7e2f4b8 100644
+--- a/src/app/commands/cmd_scroll_center.cpp
++++ b/src/app/commands/cmd_scroll_center.cpp
+@@ -23,6 +23,7 @@ public:
+   Command* clone() const override { return new ScrollCenterCommand(*this); }
+ 
+ protected:
++  bool onEnabled(Context* context) override;
+   void onExecute(Context* context) override;
+ };
+ 
+@@ -33,6 +34,13 @@ ScrollCenterCommand::ScrollCenterCommand()
+ {
+ }
+ 
++// Without an open sprite (the Home tab) there is no editor to scroll;
++// the shortcut must do nothing instead of using a null current_editor.
++bool ScrollCenterCommand::onEnabled(Context* context)
++{
++  return current_editor != nullptr;
++}
++
+ void ScrollCenterCommand::onExecute(Context* context)
+ {
+   current_editor->setDefaultScroll();
