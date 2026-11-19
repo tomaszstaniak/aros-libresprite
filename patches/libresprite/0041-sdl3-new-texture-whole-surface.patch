@@ -1,0 +1,29 @@
+Title: sdl3: upload the whole surface into a new texture
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-18
+Author: aros-libresprite project
+Problem: SDL3Surface::getTexture() creates the texture on its first call and fills it with SDL_UpdateTexture(texture, nullptr, pixels, pitch), where "pixels" already points at the requested rectangle inside the surface. When that rectangle does not start at 0,0 (the usual case after a window resize, when only part of the window is redrawn), the whole-texture upload starts in the middle of the surface: the picture appears shifted and the upload reads past the end of the surface memory. Seen on mainline AROS x86_64 as garbage in the window after a resize with OpenGL.
+Change: A new texture is filled from the start of the surface (m_bmp->pixels).
+Scope: SDL3 backend, all platforms
+Upstream: candidate (LibreSprite)
+Verification: builds for x86_64 ABIv11, mainline x86_64 and Raspberry Pi without warnings; OpenGL mode starts and draws on mainline x86_64 and ABIv11 in QEMU (2026-11-18). The effect on the reported garbage on a GeForce GTX 980 is not confirmed yet.
+Removal: when upstream fills a new texture from the surface start.
+---
+diff --git a/src/she/sdl3/sdl3_surface.cpp b/src/she/sdl3/sdl3_surface.cpp
+index c4cd6553d3d67264f101bd59a5343aba0eb19e30..539913fa2b214ba3b3d014cee69dbeeb58e5e600 100644
+--- a/src/she/sdl3/sdl3_surface.cpp
++++ b/src/she/sdl3/sdl3_surface.cpp
+@@ -555,7 +555,10 @@ namespace she {
+                                     SDL_TEXTUREACCESS_STREAMING,
+                                     width(),
+                                     height());
+-      SDL_UpdateTexture(m_texture, nullptr, pixels, m_bmp->pitch);
++      // A new texture takes the whole surface. "pixels" points at the
++      // requested rectangle: a full-size upload from there would show the
++      // picture shifted and read past the end of the surface.
++      SDL_UpdateTexture(m_texture, nullptr, m_bmp->pixels, m_bmp->pitch);
+     } else {
+       SDL_UpdateTexture(m_texture, rect, pixels, m_bmp->pitch);
+     }

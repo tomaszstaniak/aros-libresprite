@@ -66,6 +66,10 @@ drawn:
 With AUTO you can also turn OpenGL off with the "GPU acceleration" option
 in Edit > Preferences. Change the tool type in the icon's Information window.
 
+If the window shows a wrong or damaged picture, or is not redrawn after you
+move or resize it, use GUI_RENDERER=CPU. CPU mode does not use OpenGL at
+all.
+
 
 Known limitations
 -----------------
@@ -74,10 +78,10 @@ Known limitations
 - The window's menu bar holds one level of submenus. Commands that sit
   deeper are reached through their keyboard shortcuts.
 - The file system functions for scripts handle ASCII file names only.
-- Known issue: resizing the window very fast for a long time can leave
-  LibreSprite unresponsive. Save your work first, and please report it.
-- All testing so far was done in QEMU. Reports from real computers are
-  welcome.
+- Known issue: with OpenGL, resizing the window very fast for a long time
+  can leave LibreSprite unresponsive. GUI_RENDERER=CPU avoids it. Please
+  report it if you see it.
+- Most testing was done in QEMU. Reports from real computers are welcome.
 
 Report problems at:
 https://github.com/tomaszstaniak/aros-libresprite/issues

@@ -26,7 +26,8 @@ The AROS version works with the rest of the system:
   as new documents, and a picture icon with LibreSprite as its default tool opens with a
   double-click.
 - The window is drawn with OpenGL when gl.library is installed. The `GUI_RENDERER` tool
-  type (`AUTO`, `GPU` or `CPU`) in the program icon changes that.
+  type (`AUTO`, `GPU` or `CPU`) in the program icon changes that. `CPU` does not use
+  OpenGL at all: choose it if the window shows a damaged picture or is not redrawn.
 
 ![The window's menu bar with the View menu open](docs/screenshots/menu-aros-one.png)
 
@@ -38,9 +39,9 @@ The archives are on the [releases page](https://github.com/tomaszstaniak/aros-li
 
 | System | Archive |
 |---|---|
-| x86_64, ABIv11 distributions | `libresprite-1.3.99.20261114-aros4-aros-x86_64-abiv11-pc.zip` |
-| x86_64, mainline AROS (ABIv1) | `libresprite-1.3.99.20261114-aros4-aros-x86_64-abiv1-pc.zip` |
-| Raspberry Pi, mainline AROS | `libresprite-1.3.99.20261114-aros4-aros-aarch64-abiv1-raspi.zip` |
+| x86_64, ABIv11 distributions | `libresprite-1.3.99.20261114-aros5-aros-x86_64-abiv11-pc.zip` |
+| x86_64, mainline AROS (ABIv1) | `libresprite-1.3.99.20261114-aros5-aros-x86_64-abiv1-pc.zip` |
+| Raspberry Pi, mainline AROS | `libresprite-1.3.99.20261114-aros5-aros-aarch64-abiv1-raspi.zip` |
 
 A program built for one of these systems does not run on the others. With apkg:
 
@@ -66,9 +67,9 @@ matter. Settings, palettes and crash-recovery backups are kept in `ENVARC:LibreS
 - Pictures copied to other programs lose their transparency (24-bit ILBM). Inside
   LibreSprite, copied pictures keep it.
 - The file system functions for scripts handle ASCII file names only.
-- Known issue: resizing the window very fast for a long time can leave LibreSprite
-  unresponsive. Save your work first, and please report where it happens.
-- All testing so far was in QEMU: AROS One 1.3, mainline nightly 2026-11-13 and the
+- Known issue: with OpenGL, resizing the window very fast for a long time can leave
+  LibreSprite unresponsive. `GUI_RENDERER=CPU` avoids it. Please report where it happens.
+- Most testing was in QEMU: AROS One 1.3, mainline nightly 2026-11-13 and the
   Raspberry Pi nightly 2026-11-10 (raspi3b). Reports from real computers are welcome in
   the [issues](https://github.com/tomaszstaniak/aros-libresprite/issues).
 

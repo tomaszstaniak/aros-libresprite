@@ -1,0 +1,29 @@
+Title: sdl3: keep the window surface off OpenGL when GPU acceleration is off
+Repository: libresprite
+Base: 89ea7597ed1d779e85c0019555f5b97c7eac22f0
+Requires: preceding patches in series
+Date: 2026-11-19
+Author: aros-libresprite project
+Problem: With GPU acceleration off LibreSprite draws into SDL_GetWindowSurface(). SDL 3 presents that surface as a texture of its 2D renderer, which on AROS is OpenGL whenever gl.library is installed, so GUI_RENDERER=CPU still went through OpenGL and showed the same display faults as GPU mode (reported on a GeForce GTX 980, mainline nightly 2026-11-15).
+Change: Before the window is created without GPU acceleration, SDL_HINT_FRAMEBUFFER_ACCELERATION is set to "0", so the window surface is shown by the platform backend without OpenGL.
+Scope: SDL3 backend, all platforms
+Upstream: candidate (LibreSprite)
+Verification: with aros-sdl patch 0010: GUI_RENDERER=CPU draws correctly on mainline x86_64 and on ABIv11 in QEMU; on ABIv11 the window was still correct and the program responsive after 300 fast resizes (2026-11-19). Confirmed by a user on a GeForce GTX 980 with an ABIv11 distribution.
+Removal: when upstream sets the hint for its non-GPU mode.
+---
+diff --git a/src/she/sdl3/sdl3_display.cpp b/src/she/sdl3/sdl3_display.cpp
+index b59c075b271415f60a7b6bf4ed59e8bf176dcd68..aa1ee37c9b6d6a1de8bb1326af2ffba1de7de742 100644
+--- a/src/she/sdl3/sdl3_display.cpp
++++ b/src/she/sdl3/sdl3_display.cpp
+@@ -57,6 +57,11 @@ namespace she {
+     height = 600;
+ 
+     instance()->gfx([&]{
++      // Without GPU acceleration the window surface must not go through
++      // OpenGL either: by default SDL presents it as a GPU texture.
++      if (!gpu)
++        SDL_SetHint(SDL_HINT_FRAMEBUFFER_ACCELERATION, "0");
++
+       m_window = SDL_CreateWindow("",
+ 				  width, height,
+ 				  SDL_WINDOW_RESIZABLE);

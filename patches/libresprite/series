@@ -38,3 +38,5 @@
 0038-aros-font-in-memory.patch
 0039-scroll-center-without-editor.patch
 0040-sdl3-window-minimum-size.patch
+0041-sdl3-new-texture-whole-surface.patch
+0042-sdl3-cpu-mode-without-opengl.patch

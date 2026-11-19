@@ -40,8 +40,8 @@ The program is `build/<target>/ls/bin/libresprite` with its `data` drawer beside
 ## Package
 
     ILBMTOICON=<AROS build>/tools/ilbmtoicon sh scripts/make-icon.sh
-    python3 scripts/make-drawer.py <target> 1.3.99.20261114-aros4
-    APKG_PACK=<apkg-pack.pyz> scripts/package.sh 1.3.99.20261114-aros4
+    python3 scripts/make-drawer.py <target> 1.3.99.20261114-aros5
+    APKG_PACK=<apkg-pack.pyz> scripts/package.sh 1.3.99.20261114-aros5
 
 `make-drawer.py` assembles the drawer (program without unneeded symbols, icons, `data`,
 `ReadMe.txt`, licences) and the apkg description, with the system libraries the program
