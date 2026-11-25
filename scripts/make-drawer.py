@@ -176,6 +176,11 @@ def main():
     toml = (ROOT / "packaging/LibreSprite.arospkg.toml.in").read_text()
     toml = (toml.replace("@VERSION@", version).replace("@REVISION@", str(revision))
             .replace("@ARCH@", arch).replace("@ABI@", abi))
+    if abi == "v1":  # mainline and Pi builds follow a nightly's SDK: name the oldest one
+        note = (ROOT / "packaging/nightly-note.txt").read_text().strip()
+        head = "post_install_notes = [\n"
+        assert toml.count(head) == 1
+        toml = toml.replace(head, head + f'  "{note}",\n')
     for lib in libs:
         toml += f'\n[[requires_system]]\ntype = "library"\nid = "{lib}"\n'
     toml += (f'\n[source]\nrepository = "https://github.com/tomaszstaniak/aros-libresprite"\n'
